@@ -39,6 +39,7 @@ android {
 
     defaultConfig {
         applicationId = "com.wmods.wppenhacer"
+        manifestPlaceholders["appLabel"] = "@string/app_name"
         minSdk = 28
         //noinspection OldTargetApi
         targetSdk = 34
@@ -92,6 +93,11 @@ android {
     buildTypes {
 
         debug {
+            if (providers.gradleProperty("translationTest").orNull == "true") {
+                applicationIdSuffix = ".translationtest"
+                versionNameSuffix = "-translation-test"
+                manifestPlaceholders["appLabel"] = "WaEnhancer Translation Test"
+            }
             isMinifyEnabled = project.hasProperty("minify") && project.findProperty("minify").toString().toBoolean()
             //noinspection NotShrinkingResources
             isShrinkResources = false

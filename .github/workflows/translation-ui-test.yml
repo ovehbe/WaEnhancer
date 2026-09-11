@@ -2,6 +2,9 @@ name: Translation UI test APK
 on:
   pull_request:
     paths:
+      - 'app/build.gradle.kts'
+      - 'app/src/main/AndroidManifest.xml'
+      - 'app/src/main/java/com/wmods/wppenhacer/App.kt'
       - 'app/src/main/java/com/wmods/wppenhacer/xposed/features/others/GoogleTranslate*.kt'
       - '.github/workflows/translation-ui-test.yml'
   workflow_dispatch:
@@ -20,7 +23,14 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - name: Build debug APK
-        run: bash gradlew assembleWhatsappDebug --console=plain
+        run: bash gradlew assembleWhatsappDebug -PtranslationTest=true --console=plain
+      - name: Verify test APK identity
+        run: |
+          apk=$(find app/build/outputs/apk/whatsapp/debug -name '*.apk' -print -quit)
+          aapt=$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -1)
+          "$aapt" dump badging "$apk" > /tmp/apk-badging.txt
+          grep -F "package: name='com.wmods.wppenhacer.translationtest'" /tmp/apk-badging.txt
+          grep -F "application-label:'WaEnhancer Translation Test'" /tmp/apk-badging.txt
       - uses: actions/upload-artifact@v4
         with:
           name: WaEnhancer-translation-test
