@@ -202,4 +202,3 @@ internal object GoogleTranslateLanguages {
         "zu" to "Zulu"
     )
 }
-
