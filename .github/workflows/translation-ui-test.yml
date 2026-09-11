@@ -1,0 +1,28 @@
+name: Translation UI test APK
+on:
+  pull_request:
+    paths:
+      - 'app/src/main/java/com/wmods/wppenhacer/xposed/features/others/GoogleTranslate*.kt'
+      - '.github/workflows/translation-ui-test.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Build debug APK
+        run: bash gradlew assembleWhatsappDebug --console=plain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WaEnhancer-translation-test
+          path: app/build/outputs/apk/whatsapp/debug/*.apk
+          if-no-files-found: error
