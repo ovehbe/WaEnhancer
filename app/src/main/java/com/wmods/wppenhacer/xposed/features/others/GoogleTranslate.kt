@@ -21,11 +21,12 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) : Fea
         GoogleTranslateChatUi(classLoader, ::translateGoogle).install()
     }
 
-    fun translateGoogle(text: String?, languageDest: String): CompletableFuture<String?> {
+    fun translateGoogle(text: String?, languageSource: String, languageDest: String): CompletableFuture<String?> {
         if (text.isNullOrBlank()) return CompletableFuture.completedFuture(text)
         val future = CompletableFuture<String?>()
         try {
-            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl=" +
+            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=" +
+                URLEncoder.encode(languageSource, "UTF-8") + "&tl=" +
                 URLEncoder.encode(languageDest, "UTF-8") + "&q=" + URLEncoder.encode(text, "UTF-8")
             client.newCall(Request.Builder().url(url).build()).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) { future.completeExceptionally(e) }

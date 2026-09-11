@@ -2,6 +2,9 @@ name: Translation UI test APK
 on:
   pull_request:
     paths:
+      - 'app/src/main/java/com/wmods/wppenhacer/xposed/features/listeners/ConversationItemListener.kt'
+      - 'app/src/main/res/drawable/ic_translate.xml'
+      - 'app/src/test/**'
       - 'app/build.gradle.kts'
       - 'app/src/main/AndroidManifest.xml'
       - 'app/src/main/java/com/wmods/wppenhacer/App.kt'
@@ -23,7 +26,7 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - name: Build debug APK
-        run: bash gradlew assembleWhatsappDebug -PtranslationTest=true --console=plain
+        run: bash gradlew testWhatsappDebugUnitTest assembleWhatsappDebug -PtranslationTest=true --console=plain
       - name: Verify test APK identity
         run: |
           apk=$(find app/build/outputs/apk/whatsapp/debug -name '*.apk' -print -quit)
