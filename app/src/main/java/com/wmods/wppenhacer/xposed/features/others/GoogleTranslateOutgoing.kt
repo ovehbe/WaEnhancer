@@ -165,6 +165,20 @@ class GoogleTranslateOutgoing(
                         
                         if (fMessageField == null) {
                             YukiLog.log("$TAG ERROR: FMessage field not found in SendE2EMessageJob")
+                            YukiLog.log("$TAG Dumping all fields on SendE2EMessageJob instance:")
+                            try {
+                                obj.javaClass.declaredFields.forEach { field ->
+                                    try {
+                                        field.isAccessible = true
+                                        val value = field.get(obj)
+                                        YukiLog.log("$TAG   Field: ${field.name}, Type: ${field.type.name}, Value: ${value?.javaClass?.name ?: "null"}")
+                                    } catch (e: Exception) {
+                                        YukiLog.log("$TAG   Field: ${field.name}, Type: ${field.type.name}, Error: ${e.message}")
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                YukiLog.log("$TAG ERROR: Failed to dump fields: ${e.message}")
+                            }
                             return@before
                         }
                         
@@ -173,6 +187,32 @@ class GoogleTranslateOutgoing(
                         
                         if (fMessageObj == null) {
                             YukiLog.log("$TAG WARN: FMessage object is null")
+                            YukiLog.log("$TAG Dumping all fields on SendE2EMessageJob instance:")
+                            try {
+                                obj.javaClass.declaredFields.forEach { field ->
+                                    try {
+                                        field.isAccessible = true
+                                        val value = field.get(obj)
+                                        if (value != null) {
+                                            YukiLog.log("$TAG   Field: ${field.name}, Type: ${field.type.name}, Value class: ${value.javaClass.name}")
+                                            // If it's a String and looks like message text, log it
+                                            if (value is String && value.length in 1..200) {
+                                                YukiLog.log("$TAG     String value: \"${value.take(100)}\"")
+                                            }
+                                            // If it looks like a message key/ID
+                                            if (field.name.contains("key", true) || field.name.contains("id", true)) {
+                                                YukiLog.log("$TAG     Value: $value")
+                                            }
+                                        } else {
+                                            YukiLog.log("$TAG   Field: ${field.name}, Type: ${field.type.name}, Value: null")
+                                        }
+                                    } catch (e: Exception) {
+                                        YukiLog.log("$TAG   Field: ${field.name}, Error: ${e.message}")
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                YukiLog.log("$TAG ERROR: Failed to dump fields: ${e.message}")
+                            }
                             return@before
                         }
                         
