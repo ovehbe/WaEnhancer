@@ -1,17 +1,19 @@
 package com.wmods.wppenhacer.xposed.features.others
 
+import android.app.Activity
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import android.text.SpannableStringBuilder
+import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
-import com.highcapable.yukihookapi.extension.kavaref.hook
 import com.wmods.wppenhacer.xposed.core.Feature
 import com.wmods.wppenhacer.xposed.core.WppCore
 import com.wmods.wppenhacer.xposed.core.components.FMessageWpp
-import com.wmods.wppenhacer.xposed.core.devkit.Unobfuscator
 import com.wmods.wppenhacer.xposed.features.listeners.ConversationItemListener
 import com.wmods.wppenhacer.xposed.utils.ReflectionUtils
 import com.wmods.wppenhacer.xposed.utils.Utils
@@ -23,6 +25,7 @@ import kotlinx.coroutines.launch
 import java.util.WeakHashMap
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class GoogleTranslateOutgoing(
     loader: ClassLoader,
@@ -35,6 +38,8 @@ class GoogleTranslateOutgoing(
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
     private val renderedViews = WeakHashMap<TextView, String>()
+    private val isTranslating = AtomicBoolean(false)
+    private val bypassNextSend = AtomicBoolean(false)
     
     private companion object {
         const val TAG = "[WaeOutTranslate]"
@@ -98,118 +103,193 @@ class GoogleTranslateOutgoing(
     override fun doHook() {
         if (!xprefs.getBoolean("google_translate", false)) return
         
-        hookActionUserSend()
+        hookConversationSendButton()
         installOutgoingRendering()
     }
 
-    private fun hookActionUserSend() {
-        try {
-            val actionUserClass = Unobfuscator.loadActionUser(classLoader)
-            
-            // Find the send method that takes (String message, List<UserJid> recipients, ...)
-            val sendMethod = ReflectionUtils.findMethodUsingFilter(actionUserClass) { method ->
-                List::class.java.isAssignableFrom(method.returnType) &&
-                ReflectionUtils.findIndexOfType(method.parameterTypes, String::class.java) != -1 &&
-                ReflectionUtils.findIndexOfType(method.parameterTypes, List::class.java) != -1
+    private fun hookConversationSendButton() {
+        YukiLog.log("$TAG Installing conversation send button interceptor")
+        
+        WppCore.addListenerActivity { activity, state ->
+            if (activity.javaClass.simpleName == "Conversation" && 
+                state == WppCore.ActivityChangeState.ChangeType.STARTED) {
+                try {
+                    onConversationStarted(activity)
+                } catch (e: Exception) {
+                    YukiLog.log("$TAG ERROR: Failed to hook conversation: ${e.message}")
+                    e.printStackTrace()
+                }
             }
-            
-            if (sendMethod == null) {
-                YukiLog.log("$TAG ERROR: Send method not found in ActionUser")
+        }
+    }
+
+    private fun onConversationStarted(activity: Activity) {
+        YukiLog.log("$TAG Conversation activity started")
+        
+        activity.window?.decorView?.post {
+            try {
+                val currentJid = WppCore.getCurrentUserJid()
+                if (currentJid == null) {
+                    YukiLog.log("$TAG No current JID")
+                    return@post
+                }
+                
+                val chat = chatId(currentJid.userJid)
+                if (chat == null) {
+                    YukiLog.log("$TAG Failed to resolve chat ID")
+                    return@post
+                }
+                
+                val config = configOutgoing(chat)
+                if (!config.enabled) {
+                    YukiLog.log("$TAG Outgoing translation not enabled for $chat")
+                    return@post
+                }
+                
+                YukiLog.log("$TAG Outgoing translation enabled for $chat, target=${config.target}")
+                
+                // Find entry EditText and send button
+                val entryEditText = activity.findViewById<EditText>(Utils.getID("entry", "id"))
+                if (entryEditText == null) {
+                    YukiLog.log("$TAG ERROR: Entry EditText not found")
+                    return@post
+                }
+                
+                val sendButton = activity.findViewById<ImageButton>(Utils.getID("send", "id"))
+                if (sendButton == null) {
+                    YukiLog.log("$TAG ERROR: Send button not found")
+                    return@post
+                }
+                
+                YukiLog.log("$TAG Found entry and send button, installing interceptor")
+                
+                // Store original click listener
+                val originalOnClickListener = try {
+                    val listenerInfoMethod = View::class.java.getDeclaredMethod("getListenerInfo")
+                    listenerInfoMethod.isAccessible = true
+                    val listenerInfo = listenerInfoMethod.invoke(sendButton)
+                    val mOnClickListenerField = listenerInfo.javaClass.getDeclaredField("mOnClickListener")
+                    mOnClickListenerField.isAccessible = true
+                    mOnClickListenerField.get(listenerInfo) as? View.OnClickListener
+                } catch (e: Exception) {
+                    YukiLog.log("$TAG WARN: Could not get original listener: ${e.message}")
+                    null
+                }
+                
+                // Install intercepting listener
+                sendButton.setOnClickListener { view ->
+                    handleSendClick(view, entryEditText, config, chat, originalOnClickListener)
+                }
+                
+                YukiLog.log("$TAG Interceptor installed successfully")
+                
+            } catch (e: Exception) {
+                YukiLog.log("$TAG ERROR: Failed in onConversationStarted: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+    }
+
+    private fun handleSendClick(
+        sendButton: View,
+        entryEditText: EditText,
+        config: GoogleTranslationConfigOutgoing,
+        chat: String,
+        originalListener: View.OnClickListener?
+    ) {
+        try {
+            // Check bypass flag
+            if (bypassNextSend.compareAndSet(true, false)) {
+                YukiLog.log("$TAG Bypass flag set, calling original listener")
+                originalListener?.onClick(sendButton) ?: sendButton.performClick()
                 return
             }
             
-            YukiLog.log("$TAG Hook installed on ActionUser send method")
+            // Check if already translating
+            if (!isTranslating.compareAndSet(false, true)) {
+                YukiLog.log("$TAG Already translating, ignoring click")
+                return
+            }
             
-            val stringIndex = ReflectionUtils.findIndexOfType(sendMethod.parameterTypes, String::class.java)
-            val listIndex = ReflectionUtils.findIndexOfType(sendMethod.parameterTypes, List::class.java)
+            val originalText = entryEditText.text?.toString()
+            if (originalText.isNullOrBlank()) {
+                YukiLog.log("$TAG Empty text, calling original listener")
+                isTranslating.set(false)
+                originalListener?.onClick(sendButton) ?: sendButton.performClick()
+                return
+            }
             
-            sendMethod.hook {
-                before {
-                    try {
-                        YukiLog.log("$TAG Hook fired - thread=${Thread.currentThread().name}")
-                        
-                        val originalText = args[stringIndex] as? String
-                        if (originalText.isNullOrBlank()) {
-                            YukiLog.log("$TAG Message text is empty, skipping")
-                            return@before
-                        }
-                        
-                        if (originalText.length > 4000) {
-                            YukiLog.log("$TAG Message too long (${originalText.length} chars), skipping")
-                            return@before
-                        }
-                        
-                        @Suppress("UNCHECKED_CAST")
-                        val recipients = args[listIndex] as? List<Any> ?: run {
-                            YukiLog.log("$TAG No recipients found")
-                            return@before
-                        }
-                        
-                        if (recipients.isEmpty()) {
-                            YukiLog.log("$TAG Empty recipient list")
-                            return@before
-                        }
-                        
-                        // Get first recipient JID
-                        val recipientJid = recipients.firstOrNull() ?: return@before
-                        
-                        val chat = chatId(recipientJid)
-                        if (chat == null) {
-                            YukiLog.log("$TAG Failed to resolve chat ID")
-                            return@before
-                        }
-                        
-                        YukiLog.log("$TAG Resolved chat: $chat")
-                        
-                        val config = configOutgoing(chat)
-                        YukiLog.log("$TAG Config: enabled=${config.enabled}, target=${config.target}")
-                        
-                        if (!config.enabled) {
-                            YukiLog.log("$TAG Outgoing translation not enabled")
-                            return@before
-                        }
-                        
-                        YukiLog.log("$TAG Translating: \"${originalText.take(50)}...\" to ${config.target}")
-                        
-                        // Translate on background thread with timeout
-                        val translated = try {
-                            translate(originalText, "auto", config.target).get(TRANSLATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            if (originalText.length > 4000) {
+                YukiLog.log("$TAG Text too long (${originalText.length} chars), calling original listener")
+                isTranslating.set(false)
+                originalListener?.onClick(sendButton) ?: sendButton.performClick()
+                return
+            }
+            
+            YukiLog.log("$TAG Send clicked, intercepting. Text: \"${originalText.take(50)}...\"")
+            
+            // Show progress (dim button)
+            sendButton.alpha = 0.5f
+            sendButton.isEnabled = false
+            
+            // Translate on background thread
+            scope.launch {
+                try {
+                    val translated = translate(originalText, "auto", config.target)
+                        .get(TRANSLATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    
+                    main.post {
+                        try {
+                            sendButton.alpha = 1.0f
+                            sendButton.isEnabled = true
+                            
+                            if (translated.isNullOrBlank()) {
+                                YukiLog.log("$TAG Translation returned empty")
+                                Utils.showToast("Translation failed", Toast.LENGTH_SHORT)
+                                isTranslating.set(false)
+                                return@post
+                            }
+                            
+                            YukiLog.log("$TAG Translation success: \"${translated.take(50)}...\"")
+                            
+                            // Set translated text in EditText
+                            entryEditText.setText(translated)
+                            
+                            // Set bypass flag and trigger send
+                            bypassNextSend.set(true)
+                            isTranslating.set(false)
+                            
+                            YukiLog.log("$TAG Triggering real send")
+                            originalListener?.onClick(sendButton) ?: sendButton.performClick()
+                            
                         } catch (e: Exception) {
-                            YukiLog.log("$TAG ERROR: Translation failed: ${e.javaClass.simpleName}: ${e.message}")
-                            main.post {
-                                Utils.showToast("Translation failed. Message not sent.", Toast.LENGTH_SHORT)
-                            }
-                            result = null
-                            return@before
+                            YukiLog.log("$TAG ERROR in success handler: ${e.message}")
+                            isTranslating.set(false)
                         }
-                        
-                        if (translated.isNullOrBlank()) {
-                            YukiLog.log("$TAG ERROR: Translation returned empty")
-                            main.post {
-                                Utils.showToast("Translation failed. Message not sent.", Toast.LENGTH_SHORT)
-                            }
-                            result = null
-                            return@before
+                    }
+                    
+                } catch (e: Exception) {
+                    YukiLog.log("$TAG ERROR: Translation failed: ${e.javaClass.simpleName}: ${e.message}")
+                    
+                    main.post {
+                        try {
+                            sendButton.alpha = 1.0f
+                            sendButton.isEnabled = true
+                            Utils.showToast("Translation failed", Toast.LENGTH_SHORT)
+                            isTranslating.set(false)
+                        } catch (ex: Exception) {
+                            YukiLog.log("$TAG ERROR in failure handler: ${ex.message}")
                         }
-                        
-                        YukiLog.log("$TAG Translation: \"${translated.take(50)}...\"")
-                        
-                        // Replace the message text with translated text
-                        args[stringIndex] = translated
-                        
-                        // Note: We could store original for rendering later, but that requires
-                        // hooking message insertion to capture the message key. For now, send translated.
-                        YukiLog.log("$TAG SUCCESS: Sending translated message")
-                        
-                    } catch (e: Exception) {
-                        YukiLog.log("$TAG ERROR: Hook execution failed: ${e.javaClass.simpleName}: ${e.message}")
-                        e.printStackTrace()
                     }
                 }
             }
+            
         } catch (e: Exception) {
-            YukiLog.log("$TAG ERROR: Hook setup failed: ${e.javaClass.simpleName}: ${e.message}")
+            YukiLog.log("$TAG ERROR in handleSendClick: ${e.message}")
             e.printStackTrace()
+            sendButton.alpha = 1.0f
+            sendButton.isEnabled = true
+            isTranslating.set(false)
         }
     }
 
