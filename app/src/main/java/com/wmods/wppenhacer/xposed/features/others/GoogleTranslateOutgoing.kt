@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import android.text.SpannableStringBuilder
+import android.util.Log
 import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
@@ -15,7 +16,6 @@ import com.wmods.wppenhacer.xposed.core.devkit.Unobfuscator
 import com.wmods.wppenhacer.xposed.features.listeners.ConversationItemListener
 import com.wmods.wppenhacer.xposed.utils.ReflectionUtils
 import com.wmods.wppenhacer.xposed.utils.Utils
-import com.wmods.wppenhacer.xposed.utils.YukiLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,6 +38,7 @@ class GoogleTranslateOutgoing(
     private val renderedViews = WeakHashMap<TextView, String>()
     
     private companion object {
+        const val TAG = "WaeOutTranslate"
         const val PREF_PREFIX = "gtrans_out_orig_"
         const val MAX_STORED_ORIGINALS = 200
     }
@@ -67,8 +68,9 @@ class GoogleTranslateOutgoing(
                 }
                 
                 editor.apply()
+                Log.d(TAG, "Stored original for message $messageId")
             } catch (e: Exception) {
-                YukiLog.log("GoogleTranslateOutgoing: Failed to store original: ${e.message}")
+                Log.e(TAG, "Failed to store original: ${e.message}", e)
             }
         }
     }
@@ -77,7 +79,7 @@ class GoogleTranslateOutgoing(
         return try {
             settings.getString(PREF_PREFIX + messageId, null)
         } catch (e: Exception) {
-            YukiLog.log("GoogleTranslateOutgoing: Failed to retrieve original: ${e.message}")
+            Log.e(TAG, "Failed to retrieve original: ${e.message}", e)
             null
         }
     }
@@ -110,44 +112,83 @@ class GoogleTranslateOutgoing(
             )
             
             val messageSendMethod = Unobfuscator.loadBlueOnReplayMessageJobMethod(classLoader)
+            Log.i(TAG, "Hook installed on ${messageSendMethod.declaringClass.name}.${messageSendMethod.name}")
             
             messageSendMethod.hook {
                 before {
+                    Log.d(TAG, "Hook fired - checking message")
+                    
                     try {
-                        if (Looper.myLooper() == Looper.getMainLooper()) {
-                            YukiLog.log("GoogleTranslateOutgoing: Skipping - running on main thread (would ANR)")
+                        val obj = messageSendClass.cast(instance)
+                        val rawJid = ReflectionUtils.getObjectField(obj, "jid") as? String
+                        
+                        if (rawJid == null) {
+                            Log.w(TAG, "No JID found in SendE2EMessageJob instance")
                             return@before
                         }
                         
-                        val obj = messageSendClass.cast(instance)
-                        val rawJid = ReflectionUtils.getObjectField(obj, "jid") as? String ?: return@before
+                        Log.d(TAG, "Raw JID: $rawJid")
                         
                         val userJid = FMessageWpp.UserJid(rawJid)
-                        if (userJid.isStatus) return@before
+                        if (userJid.isStatus) {
+                            Log.d(TAG, "Skipping status message")
+                            return@before
+                        }
                         
-                        val chat = GoogleTranslateSettings.normalizeChatId(rawJid) ?: return@before
+                        val normalizedChat = GoogleTranslateSettings.normalizeChatId(rawJid)
+                        if (normalizedChat == null) {
+                            Log.w(TAG, "Failed to normalize chat ID from $rawJid")
+                            return@before
+                        }
                         
-                        val config = configOutgoing(chat)
-                        if (!config.enabled) return@before
+                        Log.d(TAG, "Normalized chat: $normalizedChat")
+                        
+                        val config = configOutgoing(normalizedChat)
+                        Log.d(TAG, "Config for $normalizedChat: enabled=${config.enabled}, target=${config.target}")
+                        
+                        if (!config.enabled) {
+                            Log.d(TAG, "Outgoing translation not enabled for this chat")
+                            return@before
+                        }
                         
                         val fMessageField = ReflectionUtils.findFieldUsingFilter(messageSendClass) { field ->
                             FMessageWpp.TYPE.isAssignableFrom(field.type)
-                        } ?: return@before
+                        }
+                        
+                        if (fMessageField == null) {
+                            Log.e(TAG, "FMessage field not found in SendE2EMessageJob")
+                            return@before
+                        }
                         
                         fMessageField.isAccessible = true
-                        val fMessageObj = fMessageField.get(obj) ?: return@before
-                        val fMessage = FMessageWpp(fMessageObj)
+                        val fMessageObj = fMessageField.get(obj)
                         
-                        val originalText = fMessage.messageStr?.takeIf { 
-                            it.isNotBlank() && it.length <= 4000 
-                        } ?: return@before
+                        if (fMessageObj == null) {
+                            Log.w(TAG, "FMessage object is null")
+                            return@before
+                        }
+                        
+                        val fMessage = FMessageWpp(fMessageObj)
+                        val originalText = fMessage.messageStr
+                        
+                        if (originalText.isNullOrBlank()) {
+                            Log.d(TAG, "Message text is empty/null")
+                            return@before
+                        }
+                        
+                        if (originalText.length > 4000) {
+                            Log.d(TAG, "Message too long (${originalText.length} chars), skipping")
+                            return@before
+                        }
+                        
+                        Log.i(TAG, "Translating: \"${originalText.take(50)}...\" to ${config.target}")
                         
                         val messageId = fMessage.key.messageID
                         
                         val translated = try {
                             translate(originalText, "auto", config.target).get(20, TimeUnit.SECONDS)
                         } catch (e: Exception) {
-                            YukiLog.log("GoogleTranslateOutgoing: Translation failed: ${e.message}")
+                            Log.e(TAG, "Translation failed: ${e.message}", e)
                             main.post {
                                 Utils.showToast(
                                     "Translation failed. Message not sent.",
@@ -159,7 +200,7 @@ class GoogleTranslateOutgoing(
                         }
                         
                         if (translated.isNullOrBlank()) {
-                            YukiLog.log("GoogleTranslateOutgoing: Empty translation")
+                            Log.e(TAG, "Translation returned empty result")
                             main.post {
                                 Utils.showToast(
                                     "Translation failed. Message not sent.",
@@ -170,32 +211,44 @@ class GoogleTranslateOutgoing(
                             return@before
                         }
                         
+                        Log.i(TAG, "Translation result: \"${translated.take(50)}...\"")
+                        
                         storeOriginalText(messageId, originalText)
                         
                         val textFields = fMessage.getObject().javaClass.declaredFields.filter { field ->
                             field.type == String::class.java
                         }
                         
+                        var fieldSet = false
                         for (field in textFields) {
                             try {
                                 field.isAccessible = true
                                 val value = field.get(fMessage.getObject()) as? String
                                 if (value == originalText) {
                                     field.set(fMessage.getObject(), translated)
-                                    YukiLog.log("GoogleTranslateOutgoing: Translated for $chat")
+                                    Log.i(TAG, "Replaced text in field ${field.name}")
+                                    fieldSet = true
                                     break
                                 }
                             } catch (e: Exception) {
+                                Log.w(TAG, "Failed to set field ${field.name}: ${e.message}")
                                 continue
                             }
                         }
+                        
+                        if (!fieldSet) {
+                            Log.e(TAG, "No matching text field found to replace")
+                        } else {
+                            Log.i(TAG, "Message translated successfully for $normalizedChat")
+                        }
+                        
                     } catch (e: Exception) {
-                        YukiLog.log("GoogleTranslateOutgoing: Hook execution failed: ${e.message}")
+                        Log.e(TAG, "Hook execution failed: ${e.message}", e)
                     }
                 }
             }
         } catch (e: Exception) {
-            YukiLog.log("GoogleTranslateOutgoing: Hook setup failed: ${e.message}")
+            Log.e(TAG, "Hook setup failed: ${e.message}", e)
         }
     }
 
