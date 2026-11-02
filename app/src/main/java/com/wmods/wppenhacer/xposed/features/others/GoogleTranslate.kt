@@ -25,6 +25,7 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         if (!xprefs.getBoolean("google_translate", false)) return
         // Independent of UnityMessageTranslation and its restricted language packs.
         GoogleTranslateChatUi(classLoader, ::translateGoogle).install()
+        GoogleTranslateOutgoing(classLoader, xprefs, ::translateGoogle).doHook()
     }
 
     fun translateGoogle(
