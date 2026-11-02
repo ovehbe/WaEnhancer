@@ -153,7 +153,7 @@ class App : ModuleApplication() {
         @Suppress("SimplifyBooleanWithConstants", "KotlinConstantConditions")
         @JvmStatic
         val isOriginalPackage: Boolean
-            get() = BuildConfig.APPLICATION_ID == "com.wmods.wppenhacer"
+            get() = BuildConfig.FLAVOR == "whatsapp"
 
 
     }

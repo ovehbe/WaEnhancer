@@ -36,7 +36,8 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.wmods.wppenhacer"
+        applicationId = "com.wmods.wppenhacer.test"
+        manifestPlaceholders["appLabel"] = "@string/app_name"
         minSdk = 28
         //noinspection OldTargetApi
         targetSdk = 34
