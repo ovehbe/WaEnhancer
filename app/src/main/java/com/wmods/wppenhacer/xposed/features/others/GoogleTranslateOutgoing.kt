@@ -4,7 +4,6 @@ import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import android.text.SpannableStringBuilder
-import android.util.Log
 import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
@@ -16,6 +15,7 @@ import com.wmods.wppenhacer.xposed.core.devkit.Unobfuscator
 import com.wmods.wppenhacer.xposed.features.listeners.ConversationItemListener
 import com.wmods.wppenhacer.xposed.utils.ReflectionUtils
 import com.wmods.wppenhacer.xposed.utils.Utils
+import com.wmods.wppenhacer.xposed.utils.YukiLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,9 +38,10 @@ class GoogleTranslateOutgoing(
     private val renderedViews = WeakHashMap<TextView, String>()
     
     private companion object {
-        const val TAG = "WaeOutTranslate"
+        const val TAG = "[WaeOutTranslate]"
         const val PREF_PREFIX = "gtrans_out_orig_"
         const val MAX_STORED_ORIGINALS = 200
+        const val TRANSLATION_TIMEOUT_SECONDS = 5L
     }
     
     private fun keyOutgoing(chat: String?) = "google_translation_outgoing_v1_" + (chat ?: "default")
@@ -68,9 +69,9 @@ class GoogleTranslateOutgoing(
                 }
                 
                 editor.apply()
-                Log.d(TAG, "Stored original for message $messageId")
+                YukiLog.log("$TAG Stored original for message $messageId")
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to store original: ${e.message}", e)
+                YukiLog.log("$TAG ERROR: Failed to store original: ${e.message}")
             }
         }
     }
@@ -79,7 +80,7 @@ class GoogleTranslateOutgoing(
         return try {
             settings.getString(PREF_PREFIX + messageId, null)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to retrieve original: ${e.message}", e)
+            YukiLog.log("$TAG ERROR: Failed to retrieve original: ${e.message}")
             null
         }
     }
@@ -112,42 +113,42 @@ class GoogleTranslateOutgoing(
             )
             
             val messageSendMethod = Unobfuscator.loadBlueOnReplayMessageJobMethod(classLoader)
-            Log.i(TAG, "Hook installed on ${messageSendMethod.declaringClass.name}.${messageSendMethod.name}")
+            YukiLog.log("$TAG Hook installed on ${messageSendMethod.declaringClass.name}.${messageSendMethod.name}")
             
             messageSendMethod.hook {
                 before {
-                    Log.d(TAG, "Hook fired - checking message")
+                    YukiLog.log("$TAG Hook fired - thread=${Thread.currentThread().name}")
                     
                     try {
                         val obj = messageSendClass.cast(instance)
                         val rawJid = ReflectionUtils.getObjectField(obj, "jid") as? String
                         
                         if (rawJid == null) {
-                            Log.w(TAG, "No JID found in SendE2EMessageJob instance")
+                            YukiLog.log("$TAG WARN: No JID found in SendE2EMessageJob instance")
                             return@before
                         }
                         
-                        Log.d(TAG, "Raw JID: $rawJid")
+                        YukiLog.log("$TAG Raw JID: $rawJid")
                         
                         val userJid = FMessageWpp.UserJid(rawJid)
                         if (userJid.isStatus) {
-                            Log.d(TAG, "Skipping status message")
+                            YukiLog.log("$TAG Skipping status message")
                             return@before
                         }
                         
                         val normalizedChat = GoogleTranslateSettings.normalizeChatId(rawJid)
                         if (normalizedChat == null) {
-                            Log.w(TAG, "Failed to normalize chat ID from $rawJid")
+                            YukiLog.log("$TAG WARN: Failed to normalize chat ID from $rawJid")
                             return@before
                         }
                         
-                        Log.d(TAG, "Normalized chat: $normalizedChat")
+                        YukiLog.log("$TAG Normalized chat: $normalizedChat")
                         
                         val config = configOutgoing(normalizedChat)
-                        Log.d(TAG, "Config for $normalizedChat: enabled=${config.enabled}, target=${config.target}")
+                        YukiLog.log("$TAG Config for $normalizedChat: enabled=${config.enabled}, target=${config.target}")
                         
                         if (!config.enabled) {
-                            Log.d(TAG, "Outgoing translation not enabled for this chat")
+                            YukiLog.log("$TAG Outgoing translation not enabled for this chat")
                             return@before
                         }
                         
@@ -156,7 +157,7 @@ class GoogleTranslateOutgoing(
                         }
                         
                         if (fMessageField == null) {
-                            Log.e(TAG, "FMessage field not found in SendE2EMessageJob")
+                            YukiLog.log("$TAG ERROR: FMessage field not found in SendE2EMessageJob")
                             return@before
                         }
                         
@@ -164,7 +165,7 @@ class GoogleTranslateOutgoing(
                         val fMessageObj = fMessageField.get(obj)
                         
                         if (fMessageObj == null) {
-                            Log.w(TAG, "FMessage object is null")
+                            YukiLog.log("$TAG WARN: FMessage object is null")
                             return@before
                         }
                         
@@ -172,23 +173,26 @@ class GoogleTranslateOutgoing(
                         val originalText = fMessage.messageStr
                         
                         if (originalText.isNullOrBlank()) {
-                            Log.d(TAG, "Message text is empty/null")
+                            YukiLog.log("$TAG Message text is empty/null")
                             return@before
                         }
                         
                         if (originalText.length > 4000) {
-                            Log.d(TAG, "Message too long (${originalText.length} chars), skipping")
+                            YukiLog.log("$TAG Message too long (${originalText.length} chars), skipping")
                             return@before
                         }
                         
-                        Log.i(TAG, "Translating: \"${originalText.take(50)}...\" to ${config.target}")
+                        YukiLog.log("$TAG Translating: \"${originalText.take(50)}...\" to ${config.target}")
                         
                         val messageId = fMessage.key.messageID
                         
+                        // NOTE: This blocks the current thread for up to 5 seconds
+                        // We're hooking SendE2EMessageJob which typically runs on a background thread
+                        // 5s is short enough to avoid ANR but long enough for most translations
                         val translated = try {
-                            translate(originalText, "auto", config.target).get(20, TimeUnit.SECONDS)
+                            translate(originalText, "auto", config.target).get(TRANSLATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                         } catch (e: Exception) {
-                            Log.e(TAG, "Translation failed: ${e.message}", e)
+                            YukiLog.log("$TAG ERROR: Translation failed: ${e.javaClass.simpleName}: ${e.message}")
                             main.post {
                                 Utils.showToast(
                                     "Translation failed. Message not sent.",
@@ -200,7 +204,7 @@ class GoogleTranslateOutgoing(
                         }
                         
                         if (translated.isNullOrBlank()) {
-                            Log.e(TAG, "Translation returned empty result")
+                            YukiLog.log("$TAG ERROR: Translation returned empty result")
                             main.post {
                                 Utils.showToast(
                                     "Translation failed. Message not sent.",
@@ -211,7 +215,7 @@ class GoogleTranslateOutgoing(
                             return@before
                         }
                         
-                        Log.i(TAG, "Translation result: \"${translated.take(50)}...\"")
+                        YukiLog.log("$TAG Translation result: \"${translated.take(50)}...\"")
                         
                         storeOriginalText(messageId, originalText)
                         
@@ -226,29 +230,31 @@ class GoogleTranslateOutgoing(
                                 val value = field.get(fMessage.getObject()) as? String
                                 if (value == originalText) {
                                     field.set(fMessage.getObject(), translated)
-                                    Log.i(TAG, "Replaced text in field ${field.name}")
+                                    YukiLog.log("$TAG Replaced text in field ${field.name}")
                                     fieldSet = true
                                     break
                                 }
                             } catch (e: Exception) {
-                                Log.w(TAG, "Failed to set field ${field.name}: ${e.message}")
+                                YukiLog.log("$TAG WARN: Failed to set field ${field.name}: ${e.message}")
                                 continue
                             }
                         }
                         
                         if (!fieldSet) {
-                            Log.e(TAG, "No matching text field found to replace")
+                            YukiLog.log("$TAG ERROR: No matching text field found to replace")
                         } else {
-                            Log.i(TAG, "Message translated successfully for $normalizedChat")
+                            YukiLog.log("$TAG SUCCESS: Message translated for $normalizedChat")
                         }
                         
                     } catch (e: Exception) {
-                        Log.e(TAG, "Hook execution failed: ${e.message}", e)
+                        YukiLog.log("$TAG ERROR: Hook execution failed: ${e.javaClass.simpleName}: ${e.message}")
+                        e.printStackTrace()
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Hook setup failed: ${e.message}", e)
+            YukiLog.log("$TAG ERROR: Hook setup failed: ${e.javaClass.simpleName}: ${e.message}")
+            e.printStackTrace()
         }
     }
 
