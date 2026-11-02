@@ -20,7 +20,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import org.luckypray.dexkit.query.enums.StringMatchType
 import java.util.WeakHashMap
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -69,7 +68,6 @@ class GoogleTranslateOutgoing(
                 }
                 
                 editor.apply()
-                YukiLog.log("$TAG Stored original for message $messageId")
             } catch (e: Exception) {
                 YukiLog.log("$TAG ERROR: Failed to store original: ${e.message}")
             }
@@ -100,127 +98,39 @@ class GoogleTranslateOutgoing(
     override fun doHook() {
         if (!xprefs.getBoolean("google_translate", false)) return
         
-        hookSendMessage()
+        hookActionUserSend()
         installOutgoingRendering()
     }
 
-    private fun hookSendMessage() {
+    private fun hookActionUserSend() {
         try {
-            val messageSendClass = Unobfuscator.findFirstClassUsingName(
-                classLoader,
-                StringMatchType.EndsWith,
-                "SendE2EMessageJob"
-            )
+            val actionUserClass = Unobfuscator.loadActionUser(classLoader)
             
-            val messageSendMethod = Unobfuscator.loadBlueOnReplayMessageJobMethod(classLoader)
-            YukiLog.log("$TAG Hook installed on ${messageSendMethod.declaringClass.name}.${messageSendMethod.name}")
+            // Find the send method that takes (String message, List<UserJid> recipients, ...)
+            val sendMethod = ReflectionUtils.findMethodUsingFilter(actionUserClass) { method ->
+                List::class.java.isAssignableFrom(method.returnType) &&
+                ReflectionUtils.findIndexOfType(method.parameterTypes, String::class.java) != -1 &&
+                ReflectionUtils.findIndexOfType(method.parameterTypes, List::class.java) != -1
+            }
             
-            messageSendMethod.hook {
+            if (sendMethod == null) {
+                YukiLog.log("$TAG ERROR: Send method not found in ActionUser")
+                return
+            }
+            
+            YukiLog.log("$TAG Hook installed on ActionUser send method")
+            
+            val stringIndex = ReflectionUtils.findIndexOfType(sendMethod.parameterTypes, String::class.java)
+            val listIndex = ReflectionUtils.findIndexOfType(sendMethod.parameterTypes, List::class.java)
+            
+            sendMethod.hook {
                 before {
-                    YukiLog.log("$TAG Hook fired - thread=${Thread.currentThread().name}")
-                    
                     try {
-                        val obj = messageSendClass.cast(instance)
-                        val rawJid = ReflectionUtils.getObjectField(obj, "jid") as? String
+                        YukiLog.log("$TAG Hook fired - thread=${Thread.currentThread().name}")
                         
-                        if (rawJid == null) {
-                            YukiLog.log("$TAG WARN: No JID found in SendE2EMessageJob instance")
-                            return@before
-                        }
-                        
-                        YukiLog.log("$TAG Raw JID from send job: $rawJid")
-                        
-                        val userJid = try {
-                            FMessageWpp.UserJid(rawJid)
-                        } catch (e: Exception) {
-                            YukiLog.log("$TAG ERROR: Failed to create UserJid from $rawJid: ${e.message}")
-                            return@before
-                        }
-                        
-                        if (userJid.isStatus) {
-                            YukiLog.log("$TAG Skipping status message")
-                            return@before
-                        }
-                        
-                        // Convert LID to phone JID using the same logic as the dialog
-                        val normalizedChat = chatId(userJid.userJid)
-                        if (normalizedChat == null) {
-                            YukiLog.log("$TAG WARN: Failed to resolve chat ID from $rawJid")
-                            return@before
-                        }
-                        
-                        YukiLog.log("$TAG Resolved chat ID (for config lookup): $normalizedChat")
-                        
-                        val config = configOutgoing(normalizedChat)
-                        YukiLog.log("$TAG Config for $normalizedChat: enabled=${config.enabled}, target=${config.target}")
-                        
-                        if (!config.enabled) {
-                            YukiLog.log("$TAG Outgoing translation not enabled for this chat")
-                            return@before
-                        }
-                        
-                        val fMessageField = ReflectionUtils.findFieldUsingFilter(messageSendClass) { field ->
-                            FMessageWpp.TYPE.isAssignableFrom(field.type)
-                        }
-                        
-                        if (fMessageField == null) {
-                            YukiLog.log("$TAG ERROR: FMessage field not found in SendE2EMessageJob")
-                            YukiLog.log("$TAG Dumping all fields on SendE2EMessageJob instance:")
-                            try {
-                                obj.javaClass.declaredFields.forEach { field ->
-                                    try {
-                                        field.isAccessible = true
-                                        val value = field.get(obj)
-                                        YukiLog.log("$TAG   Field: ${field.name}, Type: ${field.type.name}, Value: ${value?.javaClass?.name ?: "null"}")
-                                    } catch (e: Exception) {
-                                        YukiLog.log("$TAG   Field: ${field.name}, Type: ${field.type.name}, Error: ${e.message}")
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                YukiLog.log("$TAG ERROR: Failed to dump fields: ${e.message}")
-                            }
-                            return@before
-                        }
-                        
-                        fMessageField.isAccessible = true
-                        val fMessageObj = fMessageField.get(obj)
-                        
-                        if (fMessageObj == null) {
-                            YukiLog.log("$TAG WARN: FMessage object is null")
-                            YukiLog.log("$TAG Dumping all fields on SendE2EMessageJob instance:")
-                            try {
-                                obj.javaClass.declaredFields.forEach { field ->
-                                    try {
-                                        field.isAccessible = true
-                                        val value = field.get(obj)
-                                        if (value != null) {
-                                            YukiLog.log("$TAG   Field: ${field.name}, Type: ${field.type.name}, Value class: ${value.javaClass.name}")
-                                            // If it's a String and looks like message text, log it
-                                            if (value is String && value.length in 1..200) {
-                                                YukiLog.log("$TAG     String value: \"${value.take(100)}\"")
-                                            }
-                                            // If it looks like a message key/ID
-                                            if (field.name.contains("key", true) || field.name.contains("id", true)) {
-                                                YukiLog.log("$TAG     Value: $value")
-                                            }
-                                        } else {
-                                            YukiLog.log("$TAG   Field: ${field.name}, Type: ${field.type.name}, Value: null")
-                                        }
-                                    } catch (e: Exception) {
-                                        YukiLog.log("$TAG   Field: ${field.name}, Error: ${e.message}")
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                YukiLog.log("$TAG ERROR: Failed to dump fields: ${e.message}")
-                            }
-                            return@before
-                        }
-                        
-                        val fMessage = FMessageWpp(fMessageObj)
-                        val originalText = fMessage.messageStr
-                        
+                        val originalText = args[stringIndex] as? String
                         if (originalText.isNullOrBlank()) {
-                            YukiLog.log("$TAG Message text is empty/null")
+                            YukiLog.log("$TAG Message text is empty, skipping")
                             return@before
                         }
                         
@@ -229,69 +139,67 @@ class GoogleTranslateOutgoing(
                             return@before
                         }
                         
+                        @Suppress("UNCHECKED_CAST")
+                        val recipients = args[listIndex] as? List<Any> ?: run {
+                            YukiLog.log("$TAG No recipients found")
+                            return@before
+                        }
+                        
+                        if (recipients.isEmpty()) {
+                            YukiLog.log("$TAG Empty recipient list")
+                            return@before
+                        }
+                        
+                        // Get first recipient JID
+                        val recipientJid = recipients.firstOrNull() ?: return@before
+                        
+                        val chat = chatId(recipientJid)
+                        if (chat == null) {
+                            YukiLog.log("$TAG Failed to resolve chat ID")
+                            return@before
+                        }
+                        
+                        YukiLog.log("$TAG Resolved chat: $chat")
+                        
+                        val config = configOutgoing(chat)
+                        YukiLog.log("$TAG Config: enabled=${config.enabled}, target=${config.target}")
+                        
+                        if (!config.enabled) {
+                            YukiLog.log("$TAG Outgoing translation not enabled")
+                            return@before
+                        }
+                        
                         YukiLog.log("$TAG Translating: \"${originalText.take(50)}...\" to ${config.target}")
                         
-                        val messageId = fMessage.key.messageID
-                        
-                        // NOTE: This blocks the current thread for up to 5 seconds
-                        // We're hooking SendE2EMessageJob which typically runs on a background thread
-                        // 5s is short enough to avoid ANR but long enough for most translations
+                        // Translate on background thread with timeout
                         val translated = try {
                             translate(originalText, "auto", config.target).get(TRANSLATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                         } catch (e: Exception) {
                             YukiLog.log("$TAG ERROR: Translation failed: ${e.javaClass.simpleName}: ${e.message}")
                             main.post {
-                                Utils.showToast(
-                                    "Translation failed. Message not sent.",
-                                    Toast.LENGTH_SHORT
-                                )
+                                Utils.showToast("Translation failed. Message not sent.", Toast.LENGTH_SHORT)
                             }
                             result = null
                             return@before
                         }
                         
                         if (translated.isNullOrBlank()) {
-                            YukiLog.log("$TAG ERROR: Translation returned empty result")
+                            YukiLog.log("$TAG ERROR: Translation returned empty")
                             main.post {
-                                Utils.showToast(
-                                    "Translation failed. Message not sent.",
-                                    Toast.LENGTH_SHORT
-                                )
+                                Utils.showToast("Translation failed. Message not sent.", Toast.LENGTH_SHORT)
                             }
                             result = null
                             return@before
                         }
                         
-                        YukiLog.log("$TAG Translation result: \"${translated.take(50)}...\"")
+                        YukiLog.log("$TAG Translation: \"${translated.take(50)}...\"")
                         
-                        storeOriginalText(messageId, originalText)
+                        // Replace the message text with translated text
+                        args[stringIndex] = translated
                         
-                        val textFields = fMessage.getObject().javaClass.declaredFields.filter { field ->
-                            field.type == String::class.java
-                        }
-                        
-                        var fieldSet = false
-                        for (field in textFields) {
-                            try {
-                                field.isAccessible = true
-                                val value = field.get(fMessage.getObject()) as? String
-                                if (value == originalText) {
-                                    field.set(fMessage.getObject(), translated)
-                                    YukiLog.log("$TAG Replaced text in field ${field.name}")
-                                    fieldSet = true
-                                    break
-                                }
-                            } catch (e: Exception) {
-                                YukiLog.log("$TAG WARN: Failed to set field ${field.name}: ${e.message}")
-                                continue
-                            }
-                        }
-                        
-                        if (!fieldSet) {
-                            YukiLog.log("$TAG ERROR: No matching text field found to replace")
-                        } else {
-                            YukiLog.log("$TAG SUCCESS: Message translated for $normalizedChat")
-                        }
+                        // Note: We could store original for rendering later, but that requires
+                        // hooking message insertion to capture the message key. For now, send translated.
+                        YukiLog.log("$TAG SUCCESS: Sending translated message")
                         
                     } catch (e: Exception) {
                         YukiLog.log("$TAG ERROR: Hook execution failed: ${e.javaClass.simpleName}: ${e.message}")
