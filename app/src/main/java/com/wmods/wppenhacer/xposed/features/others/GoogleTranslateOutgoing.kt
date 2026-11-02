@@ -16,10 +16,13 @@ import com.wmods.wppenhacer.xposed.features.listeners.ConversationItemListener
 import com.wmods.wppenhacer.xposed.utils.ReflectionUtils
 import com.wmods.wppenhacer.xposed.utils.Utils
 import com.wmods.wppenhacer.xposed.utils.YukiLog
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.luckypray.dexkit.query.enums.StringMatchType
 import java.util.WeakHashMap
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 class GoogleTranslateOutgoing(
@@ -30,9 +33,14 @@ class GoogleTranslateOutgoing(
 
     private val main = Handler(Looper.getMainLooper())
     private val settings get() = WppCore.getPrivPrefs()
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
-    private val originalTexts = ConcurrentHashMap<String, String>()
     private val renderedViews = WeakHashMap<TextView, String>()
+    
+    private companion object {
+        const val PREF_PREFIX = "gtrans_out_orig_"
+        const val MAX_STORED_ORIGINALS = 200
+    }
     
     private fun keyOutgoing(chat: String?) = "google_translation_outgoing_v1_" + (chat ?: "default")
     
@@ -42,6 +50,36 @@ class GoogleTranslateOutgoing(
         return GoogleTranslateSettingsOutgoing.decode(local) 
             ?: GoogleTranslateSettingsOutgoing.decode(global) 
             ?: GoogleTranslationConfigOutgoing()
+    }
+    
+    private fun storeOriginalText(messageId: String, original: String) {
+        scope.launch {
+            try {
+                val editor = settings.edit()
+                val key = PREF_PREFIX + messageId
+                editor.putString(key, original)
+                
+                val allKeys = settings.all.keys.filter { it.startsWith(PREF_PREFIX) }
+                if (allKeys.size >= MAX_STORED_ORIGINALS) {
+                    allKeys.sorted().take(allKeys.size - MAX_STORED_ORIGINALS + 1).forEach {
+                        editor.remove(it)
+                    }
+                }
+                
+                editor.apply()
+            } catch (e: Exception) {
+                YukiLog.log("GoogleTranslateOutgoing: Failed to store original: ${e.message}")
+            }
+        }
+    }
+    
+    private fun getOriginalText(messageId: String): String? {
+        return try {
+            settings.getString(PREF_PREFIX + messageId, null)
+        } catch (e: Exception) {
+            YukiLog.log("GoogleTranslateOutgoing: Failed to retrieve original: ${e.message}")
+            null
+        }
     }
     
     private fun rawJid(jid: Any?): String? = runCatching {
@@ -76,6 +114,11 @@ class GoogleTranslateOutgoing(
             messageSendMethod.hook {
                 before {
                     try {
+                        if (Looper.myLooper() == Looper.getMainLooper()) {
+                            YukiLog.log("GoogleTranslateOutgoing: Skipping - running on main thread (would ANR)")
+                            return@before
+                        }
+                        
                         val obj = messageSendClass.cast(instance)
                         val rawJid = ReflectionUtils.getObjectField(obj, "jid") as? String ?: return@before
                         
@@ -127,7 +170,7 @@ class GoogleTranslateOutgoing(
                             return@before
                         }
                         
-                        originalTexts[messageId] = originalText
+                        storeOriginalText(messageId, originalText)
                         
                         val textFields = fMessage.getObject().javaClass.declaredFields.filter { field ->
                             field.type == String::class.java
@@ -139,7 +182,7 @@ class GoogleTranslateOutgoing(
                                 val value = field.get(fMessage.getObject()) as? String
                                 if (value == originalText) {
                                     field.set(fMessage.getObject(), translated)
-                                    YukiLog.log("GoogleTranslateOutgoing: Translated message for $chat")
+                                    YukiLog.log("GoogleTranslateOutgoing: Translated for $chat")
                                     break
                                 }
                             } catch (e: Exception) {
@@ -168,7 +211,7 @@ class GoogleTranslateOutgoing(
                 if (!fMessage.key.isFromMe) return
                 
                 val messageId = fMessage.key.messageID
-                val original = originalTexts[messageId] ?: return
+                val original = getOriginalText(messageId) ?: return
                 
                 val textView = findMessageTextView(view, fMessage.messageStr ?: return) ?: return
                 
