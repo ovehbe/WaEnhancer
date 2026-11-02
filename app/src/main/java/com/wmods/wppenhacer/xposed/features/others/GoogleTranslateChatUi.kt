@@ -373,9 +373,13 @@ internal class GoogleTranslateChatUi(
             .setPositiveButton("Save") { _, _ ->
                 settings.edit().apply {
                     if (chat != null && inherit.isChecked) {
+                        YukiLog.log("[WaeOutTranslate] Dialog: Removing per-chat settings for $chat (using global)")
                         remove(key(chat))
                         remove(keyOutgoing(chat))
                     } else {
+                        if (chat != null) {
+                            YukiLog.log("[WaeOutTranslate] Dialog: Saving settings for chat=$chat, outgoing enabled=${draftOutgoing.enabled}, target=${draftOutgoing.target}")
+                        }
                         putString(key(chat), draft.encode())
                         putString(keyOutgoing(chat), draftOutgoing.encode())
                     }

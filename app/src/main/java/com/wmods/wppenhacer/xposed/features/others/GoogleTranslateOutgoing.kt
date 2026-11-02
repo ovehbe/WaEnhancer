@@ -128,21 +128,28 @@ class GoogleTranslateOutgoing(
                             return@before
                         }
                         
-                        YukiLog.log("$TAG Raw JID: $rawJid")
+                        YukiLog.log("$TAG Raw JID from send job: $rawJid")
                         
-                        val userJid = FMessageWpp.UserJid(rawJid)
+                        val userJid = try {
+                            FMessageWpp.UserJid(rawJid)
+                        } catch (e: Exception) {
+                            YukiLog.log("$TAG ERROR: Failed to create UserJid from $rawJid: ${e.message}")
+                            return@before
+                        }
+                        
                         if (userJid.isStatus) {
                             YukiLog.log("$TAG Skipping status message")
                             return@before
                         }
                         
-                        val normalizedChat = GoogleTranslateSettings.normalizeChatId(rawJid)
+                        // Convert LID to phone JID using the same logic as the dialog
+                        val normalizedChat = chatId(userJid.userJid)
                         if (normalizedChat == null) {
-                            YukiLog.log("$TAG WARN: Failed to normalize chat ID from $rawJid")
+                            YukiLog.log("$TAG WARN: Failed to resolve chat ID from $rawJid")
                             return@before
                         }
                         
-                        YukiLog.log("$TAG Normalized chat: $normalizedChat")
+                        YukiLog.log("$TAG Resolved chat ID (for config lookup): $normalizedChat")
                         
                         val config = configOutgoing(normalizedChat)
                         YukiLog.log("$TAG Config for $normalizedChat: enabled=${config.enabled}, target=${config.target}")
