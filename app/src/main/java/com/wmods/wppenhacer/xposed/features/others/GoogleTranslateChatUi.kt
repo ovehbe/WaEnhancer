@@ -24,11 +24,13 @@ import com.google.android.material.checkbox.MaterialCheckBox
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import com.wmods.wppenhacer.R
+import com.wmods.wppenhacer.xposed.core.FeatureLoader
 import com.wmods.wppenhacer.xposed.core.WppCore
 import com.wmods.wppenhacer.xposed.core.components.AlertDialogWpp
 import com.wmods.wppenhacer.xposed.core.components.FMessageWpp
 import com.wmods.wppenhacer.xposed.core.devkit.Unobfuscator
 import com.wmods.wppenhacer.xposed.features.listeners.ConversationItemListener
+import com.wmods.wppenhacer.xposed.features.others.translation.TranslationCache
 import com.wmods.wppenhacer.xposed.features.providers.ContextMenuActionProvider
 import com.wmods.wppenhacer.xposed.utils.DesignUtils
 import com.wmods.wppenhacer.xposed.utils.ModuleContextWrapper
@@ -61,14 +63,16 @@ internal class GoogleTranslateChatUi(
 
     private val renderedViews = WeakHashMap<TextView, Rendered>()
     private val bound = WeakHashMap<ViewGroup, RequestKey>()
-    private val cache = object : LinkedHashMap<RequestKey, String>(32, .75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RequestKey, String>?) =
-            size > 200
+    
+    // Two-tier cache: in-memory LRU + persistent SQLite
+    private val translationCache by lazy { 
+        TranslationCache(FeatureLoader.mApp!!)
     }
+    
     private val pending = HashMap<RequestKey, CompletableFuture<String?>>()
     private val failures = object : LinkedHashMap<RequestKey, Long>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RequestKey, Long>?) =
-            size > 200
+            size > 500
     }
     private val reported = HashSet<String>()
     private val settings get() = WppCore.getPrivPrefs()
@@ -496,7 +500,14 @@ internal class GoogleTranslateChatUi(
         val request =
             RequestKey(chat, message.key.messageID, text, selection.source, selection.target)
         bound[root] = request
-        cache[request]?.let { render(textView, it); return }
+        
+        // Check cache (provider determined at translation time)
+        val provider = getProvider?.invoke()?.getId() ?: "google"
+        translationCache.get(message.key.messageID, selection.target, provider)?.let {
+            render(textView, it)
+            return
+        }
+        
         if ((failures[request] ?: 0L) > SystemClock.elapsedRealtime()) return
         val future = request(request)
         val weakRoot = WeakReference(root)
@@ -525,7 +536,12 @@ internal class GoogleTranslateChatUi(
     }
 
     private fun request(request: RequestKey): CompletableFuture<String?> {
-        cache[request]?.let { return CompletableFuture.completedFuture(it) }
+        // Check cache first
+        val provider = getProvider?.invoke()?.getId() ?: "google"
+        translationCache.get(request.id, request.target, provider)?.let { 
+            return CompletableFuture.completedFuture(it) 
+        }
+        
         pending[request]?.let { return it }
         if (pending.size >= 32) return CompletableFuture<String?>().apply {
             completeExceptionally(IllegalStateException("Translation queue full"))
@@ -535,8 +551,12 @@ internal class GoogleTranslateChatUi(
         future.whenComplete { result, error ->
             main.post {
                 pending.remove(request)
-                if (error == null && result != null) cache[request] = result
-                else failures[request] = SystemClock.elapsedRealtime() + 60_000
+                if (error == null && result != null) {
+                    // Store in cache with provider
+                    translationCache.put(request.id, request.target, provider, result)
+                } else {
+                    failures[request] = SystemClock.elapsedRealtime() + 60_000
+                }
             }
         }
         return future
