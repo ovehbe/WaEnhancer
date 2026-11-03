@@ -119,14 +119,16 @@ class GoogleTranslateOutgoing(
         
         val onCreateMenuConversationMethod = Unobfuscator.loadOnCreatedMenuConversation(classLoader)
         
+        // onCreate - add the menu item and set visibility
         onCreateMenuConversationMethod.hook {
             after {
                 try {
                     val menu = args[0] as Menu
                     
-                    // Check if menu item already exists
-                    if (menu.findItem(MENU_ITEM_ID) != null) {
-                        return@after
+                    // Remove existing item to refresh visibility
+                    val existingItem = menu.findItem(MENU_ITEM_ID)
+                    if (existingItem != null) {
+                        menu.removeItem(MENU_ITEM_ID)
                     }
                     
                     YukiLog.log("$TAG Adding translate menu item to conversation toolbar")
@@ -153,6 +155,9 @@ class GoogleTranslateOutgoing(
                         true
                     }
                     
+                    // Set visibility based on current chat settings
+                    updateMenuItemVisibility(menuItem)
+                    
                     YukiLog.log("$TAG Translate menu item added successfully")
                     
                 } catch (e: Exception) {
@@ -160,6 +165,38 @@ class GoogleTranslateOutgoing(
                     e.printStackTrace()
                 }
             }
+        }
+    }
+    
+    private fun updateMenuItemVisibility(menuItem: MenuItem) {
+        try {
+            // Check global master toggle
+            if (!xprefs.getBoolean("google_translate", false)) {
+                YukiLog.log("$TAG Master toggle disabled, hiding menu item")
+                menuItem.isVisible = false
+                return
+            }
+            
+            // Get current chat ID
+            val currentJid = WppCore.getCurrentUserJid()
+            val chat = currentJid?.let { chatId(it.userJid) }
+            
+            if (chat == null) {
+                YukiLog.log("$TAG No chat ID, hiding menu item")
+                menuItem.isVisible = false
+                return
+            }
+            
+            // Check if translation is enabled for this chat
+            val config = configOutgoing(chat)
+            val enabled = config.enabled
+            
+            YukiLog.log("$TAG Chat $chat: translation enabled=$enabled")
+            menuItem.isVisible = enabled
+            
+        } catch (e: Exception) {
+            YukiLog.log("$TAG ERROR updating visibility: ${e.message}")
+            menuItem.isVisible = false
         }
     }
 
