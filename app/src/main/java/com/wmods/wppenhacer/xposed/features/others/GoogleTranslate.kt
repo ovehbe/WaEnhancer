@@ -2,74 +2,129 @@ package com.wmods.wppenhacer.xposed.features.others
 
 import android.content.SharedPreferences
 import com.wmods.wppenhacer.xposed.core.Feature
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.Dispatcher
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import org.json.JSONArray
-import java.io.IOException
-import java.net.URLEncoder
+import com.wmods.wppenhacer.xposed.core.WppCore
+import com.wmods.wppenhacer.xposed.features.others.translation.GoogleTranslationProvider
+import com.wmods.wppenhacer.xposed.features.others.translation.OpenAITranslationProvider
+import com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider
+import com.wmods.wppenhacer.xposed.features.others.translation.TranslationResult
+import com.wmods.wppenhacer.xposed.features.others.translation.TranslationSettings
+import com.wmods.wppenhacer.xposed.utils.YukiLog
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
 
 class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
     Feature(loader, preferences) {
-    private val client by lazy {
-        OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS)
-            .dispatcher(Dispatcher().apply { maxRequests = 4; maxRequestsPerHost = 4 }).build()
+    
+    private val googleProvider = GoogleTranslationProvider()
+    private val openAIProvider by lazy { OpenAITranslationProvider(xprefs) }
+    
+    private companion object {
+        const val TAG = "[WaeOutTranslate]"
+        var lastConfigWarningTime = 0L
+        var lastAiFailureTime = 0L
+        var aiFailureShown = false
     }
-
+    
     override fun doHook() {
         if (!xprefs.getBoolean("google_translate", false)) return
         // Independent of UnityMessageTranslation and its restricted language packs.
-        GoogleTranslateChatUi(classLoader, ::translateGoogle).install()
+        GoogleTranslateChatUi(classLoader, ::translateExtractText, ::getCurrentProvider, xprefs).install()
+        GoogleTranslateOutgoing(classLoader, xprefs, ::translateExtractText, ::getCurrentProvider).doHook()
     }
-
-    fun translateGoogle(
+    
+    // Wrapper that extracts text from TranslationResult for compatibility
+    private fun translateExtractText(
         text: String?,
         languageSource: String,
         languageDest: String
     ): CompletableFuture<String?> {
-        if (text.isNullOrBlank()) return CompletableFuture.completedFuture(text)
-        val future = CompletableFuture<String?>()
-        try {
-            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=" +
-                    URLEncoder.encode(languageSource, "UTF-8") + "&tl=" +
-                    URLEncoder.encode(languageDest, "UTF-8") + "&q=" + URLEncoder.encode(
-                text,
-                "UTF-8"
-            )
-            client.newCall(Request.Builder().url(url).build()).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    future.completeExceptionally(e)
+        return translateWithResult(text, languageSource, languageDest)
+            .thenApply { it.text }
+    }
+    
+    private fun getCurrentProvider(): TranslationProvider {
+        val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
+        
+        YukiLog.log("$TAG getCurrentProvider: selected=$selectedProvider")
+        
+        return when (selectedProvider) {
+            TranslationSettings.PROVIDER_OPENAI -> {
+                val isConfigured = openAIProvider.isConfigured()
+                YukiLog.log("$TAG AI provider configured: $isConfigured")
+                
+                if (isConfigured) {
+                    openAIProvider
+                } else {
+                    YukiLog.log("$TAG AI selected but not configured (no API key), using Google")
+                    showConfigWarningOnce("AI provider selected but API key not set. Using Google.")
+                    googleProvider
                 }
-
-                override fun onResponse(call: Call, response: Response) {
-                    response.use {
-                        try {
-                            if (!it.isSuccessful) throw IOException("Translation HTTP ${it.code}")
-                            val parts = JSONArray(it.body.string()).getJSONArray(0)
-                            val translated = buildString {
-                                for (i in 0 until parts.length()) {
-                                    val part = parts.optJSONArray(i) ?: continue
-                                    if (!part.isNull(0)) append(part.getString(0))
-                                }
-                            }
-                            if (translated.isBlank()) throw IOException("Empty translation")
-                            future.complete(translated)
-                        } catch (e: Exception) {
-                            future.completeExceptionally(e)
-                        }
-                    }
-                }
-            })
-        } catch (e: Exception) {
-            future.completeExceptionally(e)
+            }
+            else -> {
+                YukiLog.log("$TAG Using Google provider")
+                googleProvider
+            }
         }
+    }
+    
+    private fun showConfigWarningOnce(message: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastConfigWarningTime > 60000) { // Once per minute max
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(
+                    com.wmods.wppenhacer.xposed.core.FeatureLoader.mApp,
+                    message,
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+            lastConfigWarningTime = now
+        }
+    }
+    
+    private fun showAiFailureOnce(message: String) {
+        if (!aiFailureShown) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(
+                    com.wmods.wppenhacer.xposed.core.FeatureLoader.mApp,
+                    "AI Translation Failed: $message",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+            aiFailureShown = true
+            lastAiFailureTime = System.currentTimeMillis()
+        }
+    }
+    
+    private fun translateWithResult(
+        text: String?,
+        languageSource: String,
+        languageDest: String
+    ): CompletableFuture<TranslationResult> {
+        val provider = getCurrentProvider()
+        val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
+        
+        YukiLog.log("$TAG translate: provider=${provider.getName()}, selected=$selectedProvider, text length=${text?.length ?: 0}")
+        
+        val future = provider.translateWithResult(text, languageSource, languageDest)
+        
+        // Handle fallback if AI fails and fallback is enabled
+        if (selectedProvider == TranslationSettings.PROVIDER_OPENAI && 
+            TranslationSettings.shouldFallbackToGoogle(xprefs)) {
+            return future.exceptionally { error ->
+                val errorMsg = error.message ?: "Unknown error"
+                YukiLog.log("$TAG AI translation failed ($errorMsg), falling back to Google")
+                showAiFailureOnce(errorMsg)
+                try {
+                    val googleText = googleProvider.translate(text, languageSource, languageDest).get()
+                    TranslationResult.fallback(googleText)
+                } catch (e: Exception) {
+                    YukiLog.log("$TAG Google fallback also failed: ${e.message}")
+                    TranslationResult.fallback(null)
+                }
+            }
+        }
+        
         return future
     }
 
-    override fun getPluginName() = "Google Translate"
+    override fun getPluginName() = "Live Translate"
 }

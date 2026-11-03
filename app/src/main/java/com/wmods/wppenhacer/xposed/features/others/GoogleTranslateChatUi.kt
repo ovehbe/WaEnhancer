@@ -1,6 +1,7 @@
 package com.wmods.wppenhacer.xposed.features.others
 
 import android.app.Activity
+import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -24,11 +25,13 @@ import com.google.android.material.checkbox.MaterialCheckBox
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import com.wmods.wppenhacer.R
+import com.wmods.wppenhacer.xposed.core.FeatureLoader
 import com.wmods.wppenhacer.xposed.core.WppCore
 import com.wmods.wppenhacer.xposed.core.components.AlertDialogWpp
 import com.wmods.wppenhacer.xposed.core.components.FMessageWpp
 import com.wmods.wppenhacer.xposed.core.devkit.Unobfuscator
 import com.wmods.wppenhacer.xposed.features.listeners.ConversationItemListener
+import com.wmods.wppenhacer.xposed.features.others.translation.TranslationCache
 import com.wmods.wppenhacer.xposed.features.providers.ContextMenuActionProvider
 import com.wmods.wppenhacer.xposed.utils.DesignUtils
 import com.wmods.wppenhacer.xposed.utils.ModuleContextWrapper
@@ -44,9 +47,15 @@ import java.util.concurrent.CompletableFuture
 /** All view/cache state is confined to the main thread. Never modifies stored messages. */
 internal class GoogleTranslateChatUi(
     private val loader: ClassLoader,
-    private val translate: (String?, String, String) -> CompletableFuture<String?>
+    private val translate: (String?, String, String) -> CompletableFuture<String?>,
+    private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null,
+    private val modulePrefs: SharedPreferences? = null
 ) {
     private val main = Handler(Looper.getMainLooper())
+    // Module settings (read-only from WA): provider, API key, etc.
+    private val moduleSettings get() = modulePrefs ?: WppCore.getPrivPrefs()
+    // WhatsApp writable settings: per-chat language preferences, cache
+    private val waSettings get() = WppCore.getPrivPrefs()
 
     private data class RequestKey(
         val chat: String,
@@ -60,28 +69,29 @@ internal class GoogleTranslateChatUi(
 
     private val renderedViews = WeakHashMap<TextView, Rendered>()
     private val bound = WeakHashMap<ViewGroup, RequestKey>()
-    private val cache = object : LinkedHashMap<RequestKey, String>(32, .75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RequestKey, String>?) =
-            size > 200
+    
+    // Two-tier cache: in-memory LRU + persistent SQLite
+    private val translationCache by lazy { 
+        TranslationCache(FeatureLoader.mApp!!)
     }
+    
     private val pending = HashMap<RequestKey, CompletableFuture<String?>>()
     private val failures = object : LinkedHashMap<RequestKey, Long>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RequestKey, Long>?) =
-            size > 200
+            size > 500
     }
     private val reported = HashSet<String>()
-    private val settings get() = WppCore.getPrivPrefs()
     private fun key(chat: String?) = "google_translation_v3_" + (chat ?: "default")
     private fun legacyKey(chat: String?) = "google_translation_v2_" + (chat ?: "default")
     private fun config(chat: String?): GoogleTranslationConfig = GoogleTranslateSettings.resolve(
-        chat?.let { settings.getString(key(it), null) },
-        settings.getString(key(null), null),
-        chat?.let { settings.getString(legacyKey(it), null) },
-        settings.getString(legacyKey(null), null)
+        chat?.let { waSettings.getString(key(it), null) },
+        waSettings.getString(key(null), null),
+        chat?.let { waSettings.getString(legacyKey(it), null) },
+        waSettings.getString(legacyKey(null), null)
     )
 
     private fun hasOverride(chat: String) =
-        settings.contains(key(chat)) || settings.contains(legacyKey(chat))
+        waSettings.contains(key(chat)) || waSettings.contains(legacyKey(chat))
 
     private fun rawJid(jid: Any?): String? = runCatching {
         GoogleTranslateSettings.normalizeChatId(
@@ -119,7 +129,7 @@ internal class GoogleTranslateChatUi(
     fun install() {
         MenuHome.addMenuItem { menu, activity ->
             if (menu.findItem(R.string.google_translate) == null) {
-                menu.add(0, R.string.google_translate, 0, "Google Translate")
+                menu.add(0, R.string.google_translate, 0, "Live Translate")
                     .setOnMenuItemClickListener { showSettings(activity, null); true }
             }
         }
@@ -245,7 +255,7 @@ internal class GoogleTranslateChatUi(
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             addView(TextView(activity).apply {
-                text = "Google Translate"; textSize =
+                text = "Live Translate"; textSize =
                 17f; setTextColor(DesignUtils.getPrimaryTextColor())
             })
             addView(TextView(activity).apply {
@@ -256,9 +266,22 @@ internal class GoogleTranslateChatUi(
         return row
     }
 
+    private fun keyOutgoing(chat: String?) = "google_translation_outgoing_v1_" + (chat ?: "default")
+    
+    private fun configOutgoing(chat: String?): GoogleTranslationConfigOutgoing {
+        val local = chat?.let { waSettings.getString(keyOutgoing(it), null) }
+        val global = waSettings.getString(keyOutgoing(null), null)
+        return GoogleTranslateSettingsOutgoing.decode(local) 
+            ?: GoogleTranslateSettingsOutgoing.decode(global) 
+            ?: GoogleTranslationConfigOutgoing()
+    }
+    
+    private fun hasOverrideOutgoing(chat: String) = waSettings.contains(keyOutgoing(chat))
+
     private fun showSettings(activity: Activity, chat: String?, onSaved: () -> Unit = {}) {
         val ctx = ModuleContextWrapper(activity)
         var draft = config(chat)
+        var draftOutgoing = configOutgoing(chat)
         val layout = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(
@@ -269,7 +292,7 @@ internal class GoogleTranslateChatUi(
             )
         }
         val inherit = MaterialCheckBox(ctx).apply {
-            text = "Use global settings"; isChecked = chat != null && !hasOverride(chat)
+            text = "Use global settings"; isChecked = chat != null && !hasOverride(chat) && !hasOverrideOutgoing(chat)
             visibility = if (chat == null) View.GONE else View.VISIBLE
         }
         val enabled = MaterialCheckBox(ctx).apply {
@@ -288,13 +311,30 @@ internal class GoogleTranslateChatUi(
 
         val from = languageButton()
         val to = languageButton()
+        
+        layout.addView(TextView(ctx).apply {
+            text = "Incoming Messages"
+            textSize = 16f; setTextColor(DesignUtils.getPrimaryTextColor())
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, Utils.dipToPixels(4), 0, Utils.dipToPixels(8))
+        })
+        
+        val enabledOutgoing = MaterialCheckBox(ctx).apply {
+            text = "Translate my outgoing messages"; isChecked = draftOutgoing.enabled
+        }
+        val toOutgoing = languageButton()
+        
         fun update() {
             val editable = !inherit.isChecked
             val displayed = if (inherit.isChecked) config(null) else draft
+            val displayedOutgoing = if (inherit.isChecked) configOutgoing(null) else draftOutgoing
             enabled.isEnabled = editable; enabled.isChecked = displayed.enabled
             from.isEnabled = editable; to.isEnabled = editable
             from.text = "From: ${label(displayed.source)}"
             to.text = "To: ${label(displayed.target)}"
+            enabledOutgoing.isEnabled = editable; enabledOutgoing.isChecked = displayedOutgoing.enabled
+            toOutgoing.isEnabled = editable
+            toOutgoing.text = "To: ${label(displayedOutgoing.target)}"
         }
         enabled.setOnCheckedChangeListener { _, checked ->
             if (!inherit.isChecked) draft = draft.copy(enabled = checked)
@@ -311,8 +351,28 @@ internal class GoogleTranslateChatUi(
             }
         }
         layout.addView(inherit); layout.addView(enabled); layout.addView(from); layout.addView(to)
+        
         layout.addView(TextView(ctx).apply {
-            text = "Translation sends message text to Google. Original messages remain visible."
+            text = "Outgoing Messages"
+            textSize = 16f; setTextColor(DesignUtils.getPrimaryTextColor())
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setPadding(0, Utils.dipToPixels(16), 0, Utils.dipToPixels(8))
+        })
+        
+        enabledOutgoing.setOnCheckedChangeListener { _, checked ->
+            if (!inherit.isChecked) draftOutgoing = draftOutgoing.copy(enabled = checked)
+        }
+        toOutgoing.setOnClickListener {
+            showLanguages(activity, draftOutgoing.target, false) {
+                draftOutgoing = draftOutgoing.copy(target = it); update()
+            }
+        }
+        
+        layout.addView(enabledOutgoing)
+        layout.addView(toOutgoing)
+        
+        layout.addView(TextView(ctx).apply {
+            text = "Translation sends message text to Google. Original messages remain visible. On failure, messages are not sent."
             textSize = 13f; setTextColor(DesignUtils.getPrimaryTextColor()); alpha = .7f
             setPadding(0, Utils.dipToPixels(12), 0, Utils.dipToPixels(8))
         })
@@ -321,15 +381,21 @@ internal class GoogleTranslateChatUi(
             .setView(ScrollView(ctx).apply { addView(layout) })
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Save") { _, _ ->
-                settings.edit().apply {
-                    if (chat != null && inherit.isChecked) remove(key(chat)) else putString(
-                        key(chat),
-                        draft.encode()
-                    )
+                waSettings.edit().apply {
+                    if (chat != null && inherit.isChecked) {
+                        YukiLog.log("[WaeOutTranslate] Dialog: Removing per-chat settings for $chat (using global)")
+                        remove(key(chat))
+                        remove(keyOutgoing(chat))
+                    } else {
+                        if (chat != null) {
+                            YukiLog.log("[WaeOutTranslate] Dialog: Saving settings for chat=$chat, outgoing enabled=${draftOutgoing.enabled}, target=${draftOutgoing.target}")
+                        }
+                        putString(key(chat), draft.encode())
+                        putString(keyOutgoing(chat), draftOutgoing.encode())
+                    }
                     remove(legacyKey(chat))
                 }.apply()
                 failures.clear()
-                // Invalidate requests from an older selection, including changes made away from the conversation.
                 bound.clear()
                 renderedViews.entries.toList().forEach { (view, old) ->
                     if (view.text.toString() == old.rendered) view.text = old.original
@@ -439,7 +505,14 @@ internal class GoogleTranslateChatUi(
         val request =
             RequestKey(chat, message.key.messageID, text, selection.source, selection.target)
         bound[root] = request
-        cache[request]?.let { render(textView, it); return }
+        
+        // Check cache (provider determined at translation time)
+        val provider = getProvider?.invoke()?.getId() ?: "google"
+        translationCache.get(message.key.messageID, selection.target, provider)?.let {
+            render(textView, it)
+            return
+        }
+        
         if ((failures[request] ?: 0L) > SystemClock.elapsedRealtime()) return
         val future = request(request)
         val weakRoot = WeakReference(root)
@@ -462,13 +535,18 @@ internal class GoogleTranslateChatUi(
         val original = renderedViews[view]?.original ?: android.text.SpannedString(view.text)
         if (original.toString().trim() == translation.trim()) return
         val output =
-            SpannableStringBuilder(original).append("\n\nGoogle Translate\n").append(translation)
+            SpannableStringBuilder(original).append("\n\nTranslation:\n").append(translation)
         renderedViews[view] = Rendered(original, output.toString())
         view.text = output
     }
 
     private fun request(request: RequestKey): CompletableFuture<String?> {
-        cache[request]?.let { return CompletableFuture.completedFuture(it) }
+        // Check cache first
+        val provider = getProvider?.invoke()?.getId() ?: "google"
+        translationCache.get(request.id, request.target, provider)?.let { 
+            return CompletableFuture.completedFuture(it) 
+        }
+        
         pending[request]?.let { return it }
         if (pending.size >= 32) return CompletableFuture<String?>().apply {
             completeExceptionally(IllegalStateException("Translation queue full"))
@@ -478,8 +556,12 @@ internal class GoogleTranslateChatUi(
         future.whenComplete { result, error ->
             main.post {
                 pending.remove(request)
-                if (error == null && result != null) cache[request] = result
-                else failures[request] = SystemClock.elapsedRealtime() + 60_000
+                if (error == null && result != null) {
+                    // Store in cache with provider
+                    translationCache.put(request.id, request.target, provider, result)
+                } else {
+                    failures[request] = SystemClock.elapsedRealtime() + 60_000
+                }
             }
         }
         return future
@@ -541,5 +623,24 @@ internal class GoogleTranslateChatUi(
                 }
             }
         }
+    }
+}
+
+data class GoogleTranslationConfigOutgoing(
+    val enabled: Boolean = false,
+    val target: String = "en"
+) {
+    fun encode() = "${if (enabled) "on" else "off"}|$target"
+}
+
+object GoogleTranslateSettingsOutgoing {
+    private val languages = GoogleTranslateLanguages.entries.map { it.first }.toSet()
+
+    fun decode(value: String?): GoogleTranslationConfigOutgoing? {
+        val parts = value?.split('|') ?: return null
+        if (parts.size != 2 || parts[0] !in setOf("on", "off") || parts[1] !in languages) {
+            return null
+        }
+        return GoogleTranslationConfigOutgoing(parts[0] == "on", parts[1])
     }
 }
