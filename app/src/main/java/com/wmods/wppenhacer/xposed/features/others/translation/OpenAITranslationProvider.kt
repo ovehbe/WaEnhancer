@@ -45,13 +45,13 @@ class OpenAITranslationProvider(
     }
     
     /**
-     * Normalize base URL: ensure it ends with /v1 or another version segment
-     * Don't double-append if already present
+     * Normalize base URL: ensure it has /v1 or another version segment
+     * Don't double-append if already present anywhere in the path
      */
     private fun normalizeBaseUrl(url: String): String {
         val trimmed = url.trimEnd('/')
-        // Check if already has a version segment like /v1, /v1beta, etc
-        return if (trimmed.matches(Regex(".*/(v\\d+|v\\d+[a-z]+)$"))) {
+        // Check if already has a version segment like /v1, /v1beta, etc anywhere in path
+        return if (trimmed.contains(Regex("/(v\\d+|v\\d+[a-z]+)(/|$)"))) {
             trimmed
         } else {
             "$trimmed/v1"
@@ -78,7 +78,8 @@ class OpenAITranslationProvider(
     override fun translateWithResult(
         text: String?,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
+        bypassCache: Boolean
     ): CompletableFuture<TranslationResult> {
         val startTime = System.currentTimeMillis()
         
@@ -99,7 +100,8 @@ class OpenAITranslationProvider(
     override fun translate(
         text: String?,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
+        bypassCache: Boolean
     ): CompletableFuture<String?> {
         if (text.isNullOrBlank()) {
             return CompletableFuture.completedFuture(text)

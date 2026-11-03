@@ -13,23 +13,27 @@ abstract class TranslationProvider {
      * @param text The text to translate
      * @param sourceLanguage The source language code (e.g. "auto", "en", "id")
      * @param targetLanguage The target language code (e.g. "en", "id")
+     * @param bypassCache if true, skip cache read (but still write result)
      * @return CompletableFuture with the translated text, or null on failure
      */
     abstract fun translate(
         text: String?,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
+        bypassCache: Boolean = false
     ): CompletableFuture<String?>
     
     /**
      * Translate and return result with provider info
+     * @param bypassCache if true, skip cache read (but still write result)
      */
     open fun translateWithResult(
         text: String?,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
+        bypassCache: Boolean = false
     ): CompletableFuture<TranslationResult> {
-        return translate(text, sourceLanguage, targetLanguage).thenApply { translated ->
+        return translate(text, sourceLanguage, targetLanguage, bypassCache).thenApply { translated ->
             TranslationResult(translated, getName(), getBadge())
         }
     }

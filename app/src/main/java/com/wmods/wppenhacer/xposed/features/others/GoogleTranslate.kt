@@ -95,10 +95,11 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
     private fun translateWithResult(
         text: String?,
         languageSource: String,
-        languageDest: String
+        languageDest: String,
+        bypassCache: Boolean = false
     ): CompletableFuture<TranslationResult> {
         val provider = getCurrentProvider()
-        val future = provider.translateWithResult(text, languageSource, languageDest)
+        val future = provider.translateWithResult(text, languageSource, languageDest, bypassCache)
         
         val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
         if (selectedProvider == TranslationSettings.PROVIDER_OPENAI && 
@@ -106,7 +107,7 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
             return future.exceptionally { error ->
                 showAiFailureOnce(error.message ?: "Unknown error")
                 try {
-                    val googleText = googleProvider.translate(text, languageSource, languageDest).get()
+                    val googleText = googleProvider.translateWithResult(text, languageSource, languageDest, bypassCache).get().text
                     YukiLog.log("$TAG ✓ Google fallback succeeded")
                     TranslationResult.fallback(googleText)
                 } catch (e: Exception) {

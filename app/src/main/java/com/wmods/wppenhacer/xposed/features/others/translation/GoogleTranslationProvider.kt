@@ -30,7 +30,8 @@ class GoogleTranslationProvider : TranslationProvider() {
     override fun translate(
         text: String?,
         sourceLanguage: String,
-        targetLanguage: String
+        targetLanguage: String,
+        bypassCache: Boolean
     ): CompletableFuture<String?> {
         if (text.isNullOrBlank()) {
             return CompletableFuture.completedFuture(text)
