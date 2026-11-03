@@ -37,16 +37,17 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         if (!xprefs.getBoolean("google_translate", false)) return
         // Independent of UnityMessageTranslation and its restricted language packs.
         GoogleTranslateChatUi(classLoader, ::translateExtractText, ::getCurrentProvider, xprefs, ::translateWithResult).install()
-        GoogleTranslateOutgoing(classLoader, xprefs, ::translateExtractText, ::getCurrentProvider).doHook()
+        GoogleTranslateOutgoing(classLoader, xprefs, ::translateExtractText, ::getCurrentProvider, ::translateWithResult).doHook()
     }
     
     // Wrapper that extracts text from TranslationResult for compatibility
     private fun translateExtractText(
         text: String?,
         languageSource: String,
-        languageDest: String
+        languageDest: String,
+        chatJid: String? = null
     ): CompletableFuture<String?> {
-        return translateWithResult(text, languageSource, languageDest)
+        return translateWithResult(text, languageSource, languageDest, false, chatJid)
             .thenApply { it.text }
     }
     
@@ -106,12 +107,15 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         languageSource: String,
         languageDest: String,
         bypassCache: Boolean = false,
-        customPrompt: String? = null
+        chatJid: String? = null
     ): CompletableFuture<TranslationResult> {
         val provider = getCurrentProvider()
         
         val effectivePrompt = if (provider is OpenAITranslationProvider) {
-            buildEffectivePrompt(customPrompt)
+            val perChatPrompt = if (chatJid != null) {
+                WppCore.getPrivPrefs().getString("google_translation_ai_prompt_$chatJid", null)
+            } else null
+            buildEffectivePrompt(perChatPrompt)
         } else {
             null
         }

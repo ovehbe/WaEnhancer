@@ -47,10 +47,10 @@ import java.util.concurrent.CompletableFuture
 /** All view/cache state is confined to the main thread. Never modifies stored messages. */
 internal class GoogleTranslateChatUi(
     private val loader: ClassLoader,
-    private val translate: (String?, String, String) -> CompletableFuture<String?>,
+    private val translate: (String?, String, String, String?) -> CompletableFuture<String?>,
     private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null,
     private val modulePrefs: SharedPreferences? = null,
-    private val translateWithResult: ((String?, String, String) -> CompletableFuture<com.wmods.wppenhacer.xposed.features.others.translation.TranslationResult>)? = null
+    private val translateWithResult: ((String?, String, String, Boolean, String?) -> CompletableFuture<com.wmods.wppenhacer.xposed.features.others.translation.TranslationResult>)? = null
 ) {
     private val main = Handler(Looper.getMainLooper())
     // Module settings (read-only from WA): provider, API key, etc.
@@ -584,7 +584,7 @@ internal class GoogleTranslateChatUi(
         
         // If translateWithResult available, use it to track provider/fallback
         if (translateWithResult != null) {
-            val futureResult = translateWithResult.invoke(request.text, request.source, request.target)
+            val futureResult = translateWithResult.invoke(request.text, request.source, request.target, false, request.chat)
             val future = futureResult.thenApply { it.text }
             
             pending[request] = future
@@ -603,7 +603,7 @@ internal class GoogleTranslateChatUi(
             return future
         } else {
             // Fallback: use plain translate (legacy path)
-            val future = translate(request.text, request.source, request.target)
+            val future = translate(request.text, request.source, request.target, request.chat)
             pending[request] = future
             future.whenComplete { result, error ->
                 main.post {

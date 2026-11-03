@@ -92,6 +92,10 @@ class AudioTranscript(
 
         val responseJson = transcribeAudio(file, provider)
         val transcript = responseJson.getString(JSON_TEXT)
+        
+        val chatJid = fmessage.key.remoteJid?.userJid as? String
+        val finalTranscript = translateTranscriptIfEnabled(transcript, chatJid)
+        
         val segments = buildTranscriptionSegments(
             responseJson = responseJson,
             transcript = transcript,
@@ -103,7 +107,7 @@ class AudioTranscript(
             onComplete,
             callback,
             fmessageObj,
-            transcript,
+            finalTranscript,
             segments,
             TRANSCRIPTION_STATUS_SUCCESS
         )
@@ -111,6 +115,46 @@ class AudioTranscript(
         param.result = null
     }
 
+    private fun translateTranscriptIfEnabled(transcript: String, chatJid: String?): String {
+        if (transcript.isBlank() || chatJid == null) return transcript
+        
+        val translator = GoogleTranslate.getInstance() ?: return transcript
+        
+        try {
+            val prefs = com.wmods.wppenhacer.xposed.core.WppCore.getPrivPrefs()
+            val key = "google_translation_v3_$chatJid"
+            val configJson = prefs.getString(key, null) ?: return transcript
+            
+            val targetLang = try {
+                val obj = org.json.JSONObject(configJson)
+                val enabled = obj.optBoolean("enabled", false)
+                if (!enabled) return transcript
+                obj.optString("targetLanguage", "")
+            } catch (e: Exception) {
+                return transcript
+            }
+            
+            if (targetLang.isBlank()) return transcript
+            
+            val result = translator.translateWithResult(
+                text = transcript,
+                languageSource = "auto",
+                languageDest = targetLang,
+                bypassCache = false,
+                chatJid = chatJid
+            ).get()
+            
+            val translated = result.text
+            if (!translated.isNullOrBlank() && translated != transcript) {
+                return "$transcript\n\nTranslation: $translated"
+            }
+        } catch (e: Exception) {
+            // Fall back to original on any failure
+        }
+        
+        return transcript
+    }
+    
     private fun getApiKey(provider: String): String {
         return when (provider) {
             PROVIDER_GROQ -> xprefs.getString(PREF_GROQ_API_KEY, "").orEmpty()

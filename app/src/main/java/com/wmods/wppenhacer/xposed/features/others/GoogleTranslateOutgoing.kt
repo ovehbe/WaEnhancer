@@ -33,8 +33,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 class GoogleTranslateOutgoing(
     loader: ClassLoader,
     preferences: SharedPreferences,
-    private val translate: (String?, String, String) -> CompletableFuture<String?>,
-    private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null
+    private val translate: (String?, String, String, String?) -> CompletableFuture<String?>,
+    private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null,
+    private val translateWithResult: ((String?, String, String, Boolean, String?) -> CompletableFuture<com.wmods.wppenhacer.xposed.features.others.translation.TranslationResult>)? = null
 ) : Feature(loader, preferences) {
 
     private val main = Handler(Looper.getMainLooper())
@@ -261,6 +262,7 @@ class GoogleTranslateOutgoing(
             // Get target language
             val currentJid = WppCore.getCurrentUserJid()
             val chat = currentJid?.let { chatId(it.userJid) }
+            val chatJid = currentJid?.userJid as? String
             val config = configOutgoing(chat)
             
             val targetLang = config.target
@@ -280,7 +282,7 @@ class GoogleTranslateOutgoing(
             scope.launch {
                 try {
                     val startTime = System.currentTimeMillis()
-                    val translated = translate(originalText, "auto", targetLang)
+                    val translated = translate(originalText, "auto", targetLang, chatJid)
                         .get(TRANSLATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                     val duration = System.currentTimeMillis() - startTime
                     
