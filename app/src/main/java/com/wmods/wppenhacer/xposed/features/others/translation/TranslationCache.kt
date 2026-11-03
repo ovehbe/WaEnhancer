@@ -26,18 +26,32 @@ class TranslationCache(context: Context) {
     // SQLite database (second tier)
     private val dbHelper = TranslationDatabaseHelper(context)
     
-    private companion object {
+    companion object {
         const val TAG = "[TranslationCache]"
         const val MAX_ENTRIES = 2000
         const val MAX_AGE_DAYS = 7
+        
+        fun hashPrompt(prompt: String?): String? {
+            if (prompt.isNullOrBlank()) return null
+            
+            return try {
+                val md = java.security.MessageDigest.getInstance("MD5")
+                val digest = md.digest(prompt.toByteArray())
+                digest.joinToString("") { "%02x".format(it) }.substring(0, 8)
+            } catch (e: Exception) {
+                null
+            }
+        }
     }
     
     /**
      * Get cached translation if available
+     * @param promptHash hash of the effective prompt (null for non-AI translations)
      * @return cached translation or null
      */
-    fun get(messageId: String, targetLang: String, provider: String): String? {
-        val key = buildKey(messageId, targetLang, provider)
+    fun get(messageId: String, targetLang: String, provider: String, promptHash: String? = null): String? {
+        val providerKey = buildProviderKey(provider, promptHash)
+        val key = buildKey(messageId, targetLang, providerKey)
         
         // Try memory cache first
         val memResult = memoryCache.get(key)
@@ -47,7 +61,7 @@ class TranslationCache(context: Context) {
         
         // Try persistent cache (synchronous for simplicity, runs fast with index)
         return try {
-            val dbResult = dbHelper.get(messageId, targetLang, provider)
+            val dbResult = dbHelper.get(messageId, targetLang, providerKey)
             if (dbResult != null) {
                 // Promote to memory cache
                 memoryCache.put(key, dbResult)
@@ -61,9 +75,11 @@ class TranslationCache(context: Context) {
     
     /**
      * Store translation in cache
+     * @param promptHash hash of the effective prompt (null for non-AI translations)
      */
-    fun put(messageId: String, targetLang: String, provider: String, translation: String) {
-        val key = buildKey(messageId, targetLang, provider)
+    fun put(messageId: String, targetLang: String, provider: String, translation: String, promptHash: String? = null) {
+        val providerKey = buildProviderKey(provider, promptHash)
+        val key = buildKey(messageId, targetLang, providerKey)
         
         // Store in memory cache
         memoryCache.put(key, translation)
@@ -71,13 +87,21 @@ class TranslationCache(context: Context) {
         // Store in persistent cache (async)
         scope.launch {
             try {
-                dbHelper.put(messageId, targetLang, provider, translation)
+                dbHelper.put(messageId, targetLang, providerKey, translation)
                 
                 // Prune old entries if needed (async, off main thread)
                 pruneIfNeeded()
             } catch (e: Exception) {
                 YukiLog.log("$TAG Error writing to DB: ${e.message}")
             }
+        }
+    }
+    
+    private fun buildProviderKey(provider: String, promptHash: String?): String {
+        return if (promptHash.isNullOrBlank()) {
+            provider
+        } else {
+            "$provider:$promptHash"
         }
     }
     

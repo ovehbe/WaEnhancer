@@ -22,6 +22,15 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         var lastConfigWarningTime = 0L
         var lastAiFailureTime = 0L
         var aiFailureShown = false
+        
+        @Volatile
+        private var instanceRef: GoogleTranslate? = null
+        
+        fun getInstance(): GoogleTranslate? = instanceRef
+    }
+    
+    init {
+        instanceRef = this
     }
     
     override fun doHook() {
@@ -92,14 +101,22 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         }
     }
     
-    private fun translateWithResult(
+    fun translateWithResult(
         text: String?,
         languageSource: String,
         languageDest: String,
-        bypassCache: Boolean = false
+        bypassCache: Boolean = false,
+        customPrompt: String? = null
     ): CompletableFuture<TranslationResult> {
         val provider = getCurrentProvider()
-        val future = provider.translateWithResult(text, languageSource, languageDest, bypassCache)
+        
+        val effectivePrompt = if (provider is OpenAITranslationProvider) {
+            buildEffectivePrompt(customPrompt)
+        } else {
+            null
+        }
+        
+        val future = provider.translateWithResult(text, languageSource, languageDest, bypassCache, effectivePrompt)
         
         val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
         if (selectedProvider == TranslationSettings.PROVIDER_OPENAI && 
@@ -107,7 +124,7 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
             return future.exceptionally { error ->
                 showAiFailureOnce(error.message ?: "Unknown error")
                 try {
-                    val googleText = googleProvider.translateWithResult(text, languageSource, languageDest, bypassCache).get().text
+                    val googleText = googleProvider.translateWithResult(text, languageSource, languageDest, bypassCache, null).get().text
                     YukiLog.log("$TAG ✓ Google fallback succeeded")
                     TranslationResult.fallback(googleText)
                 } catch (e: Exception) {
@@ -118,6 +135,21 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         }
         
         return future
+    }
+    
+    private fun buildEffectivePrompt(perChatPrompt: String?): String {
+        val globalPrompt = xprefs.getString("translation_ai_global_prompt", null)
+        val parts = mutableListOf<String>()
+        
+        if (!globalPrompt.isNullOrBlank()) {
+            parts.add(globalPrompt.trim())
+        }
+        
+        if (!perChatPrompt.isNullOrBlank()) {
+            parts.add(perChatPrompt.trim())
+        }
+        
+        return if (parts.isEmpty()) "" else parts.joinToString("\n")
     }
 
     override fun getPluginName() = "Live Translate"

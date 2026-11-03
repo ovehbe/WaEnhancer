@@ -31,7 +31,8 @@ class GoogleTranslationProvider : TranslationProvider() {
         text: String?,
         sourceLanguage: String,
         targetLanguage: String,
-        bypassCache: Boolean
+        bypassCache: Boolean,
+        customPrompt: String?
     ): CompletableFuture<String?> {
         if (text.isNullOrBlank()) {
             return CompletableFuture.completedFuture(text)

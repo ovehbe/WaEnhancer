@@ -79,15 +79,16 @@ class OpenAITranslationProvider(
         text: String?,
         sourceLanguage: String,
         targetLanguage: String,
-        bypassCache: Boolean
+        bypassCache: Boolean,
+        customPrompt: String?
     ): CompletableFuture<TranslationResult> {
         val startTime = System.currentTimeMillis()
         
-        return translate(text, sourceLanguage, targetLanguage)
+        return translate(text, sourceLanguage, targetLanguage, bypassCache, customPrompt)
             .thenApply { translated ->
                 val latency = System.currentTimeMillis() - startTime
                 val model = getModel()
-                YukiLog.log("$TAG Translation completed: model=$model, latency=${latency}ms")
+                YukiLog.log("$TAG Translation completed: model=$model, latency=${latency}ms, promptLen=${customPrompt?.length ?: 0}")
                 TranslationResult.ai(translated, model)
             }
             .exceptionally { error ->
@@ -101,7 +102,8 @@ class OpenAITranslationProvider(
         text: String?,
         sourceLanguage: String,
         targetLanguage: String,
-        bypassCache: Boolean
+        bypassCache: Boolean,
+        customPrompt: String?
     ): CompletableFuture<String?> {
         if (text.isNullOrBlank()) {
             return CompletableFuture.completedFuture(text)
@@ -124,6 +126,7 @@ class OpenAITranslationProvider(
             
             val url = "$baseUrl/chat/completions"
             val prompt = buildPrompt(text, targetLanguage)
+            val systemPrompt = buildSystemPrompt(customPrompt)
             
             val requestBody = JSONObject().apply {
                 put("model", model)
@@ -131,8 +134,7 @@ class OpenAITranslationProvider(
                 put("messages", JSONArray().apply {
                     put(JSONObject().apply {
                         put("role", "system")
-                        put("content", "You are a translator. Translate the given text to the target language. " +
-                                "Output ONLY the translation, nothing else. Preserve emoji and line breaks exactly.")
+                        put("content", systemPrompt)
                     })
                     put(JSONObject().apply {
                         put("role", "user")
@@ -223,6 +225,17 @@ class OpenAITranslationProvider(
         }
         
         return "Translate this to $langName:\n\n$text"
+    }
+    
+    private fun buildSystemPrompt(customPrompt: String?): String {
+        val base = "You are a translator. Translate the given text to the target language. " +
+                   "Output ONLY the translation, nothing else. Preserve emoji and line breaks exactly."
+        
+        return if (customPrompt.isNullOrBlank()) {
+            base
+        } else {
+            "$base\n\n$customPrompt"
+        }
     }
     
     override fun getName(): String = "AI (OpenAI-compatible)"

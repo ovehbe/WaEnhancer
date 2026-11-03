@@ -20,20 +20,23 @@ abstract class TranslationProvider {
         text: String?,
         sourceLanguage: String,
         targetLanguage: String,
-        bypassCache: Boolean = false
+        bypassCache: Boolean = false,
+        customPrompt: String? = null
     ): CompletableFuture<String?>
     
     /**
      * Translate and return result with provider info
      * @param bypassCache if true, skip cache read (but still write result)
+     * @param customPrompt additional custom prompt instructions (AI only)
      */
     open fun translateWithResult(
         text: String?,
         sourceLanguage: String,
         targetLanguage: String,
-        bypassCache: Boolean = false
+        bypassCache: Boolean = false,
+        customPrompt: String? = null
     ): CompletableFuture<TranslationResult> {
-        return translate(text, sourceLanguage, targetLanguage, bypassCache).thenApply { translated ->
+        return translate(text, sourceLanguage, targetLanguage, bypassCache, customPrompt).thenApply { translated ->
             TranslationResult(translated, getName(), getBadge())
         }
     }
