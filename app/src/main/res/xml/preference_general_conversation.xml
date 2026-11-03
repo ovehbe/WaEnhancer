@@ -165,12 +165,14 @@
                 app:summary="Fetch available models from API"
                 app:title="Fetch Models" />
 
-            <com.wmods.wppenhacer.preference.EditableListPreference
+            <ListPreference
                 app:defaultValue="gpt-4o-mini"
                 app:dependency="google_translate"
+                app:entries="@array/translation_model_entries"
+                app:entryValues="@array/translation_model_values"
                 app:iconSpaceReserved="false"
                 app:key="translation_ai_model"
-                app:summary="Select or enter model name"
+                app:summary="Select model or fetch from API"
                 app:title="AI Model" />
 
             <rikka.material.preference.MaterialSwitchPreference
