@@ -544,9 +544,9 @@ internal class GoogleTranslateChatUi(
     }
 
     private fun request(request: RequestKey): CompletableFuture<String?> {
-        // Check cache first
-        val provider = getProvider?.invoke()?.getId() ?: "google"
-        translationCache.get(request.id, request.target, provider)?.let { 
+        // Check cache first - use CURRENT provider at lookup time
+        val lookupProvider = getProvider?.invoke()?.getId() ?: "google"
+        translationCache.get(request.id, request.target, lookupProvider)?.let { 
             return CompletableFuture.completedFuture(it) 
         }
         
@@ -554,14 +554,16 @@ internal class GoogleTranslateChatUi(
         if (pending.size >= 32) return CompletableFuture<String?>().apply {
             completeExceptionally(IllegalStateException("Translation queue full"))
         }
+        
         val future = translate(request.text, request.source, request.target)
         pending[request] = future
         future.whenComplete { result, error ->
             main.post {
                 pending.remove(request)
                 if (error == null && result != null) {
-                    // Store in cache with provider
-                    translationCache.put(request.id, request.target, provider, result)
+                    // Store in cache with ACTUAL provider at storage time (may differ from lookup if fallback occurred)
+                    val actualProvider = getProvider?.invoke()?.getId() ?: "google"
+                    translationCache.put(request.id, request.target, actualProvider, result)
                 } else {
                     failures[request] = SystemClock.elapsedRealtime() + 60_000
                 }
