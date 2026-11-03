@@ -27,6 +27,8 @@ class AudioTranscript(
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient()
     }
+    
+    private val transcriptStore = mutableMapOf<String, String>()
 
     @Throws(Throwable::class)
     override fun doHook() {
@@ -57,7 +59,33 @@ class AudioTranscript(
                 )
             }
         }
+        
+        // Add copy transcript context menu action
+        installCopyTranscriptAction()
 
+    }
+    
+    private fun installCopyTranscriptAction() {
+        com.wmods.wppenhacer.xposed.features.providers.ContextMenuActionProvider.register { activity, _, message ->
+            val messageId = message.key.messageID ?: return@register null
+            
+            // Only show for voice messages (mediaType 2 = PTT/voice note)
+            if (message.mediaType != 2) return@register null
+            
+            val transcript = synchronized(transcriptStore) {
+                transcriptStore[messageId]
+            } ?: return@register null
+            
+            com.wmods.wppenhacer.xposed.features.providers.ContextMenuActionProvider.ContextMenuAction(
+                title = "Copy Transcript"
+            ) {
+                val clipboard = activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE) 
+                    as? android.content.ClipboardManager
+                val clip = android.content.ClipData.newPlainText("Transcript", transcript)
+                clipboard?.setPrimaryClip(clip)
+                Utils.showToast("Transcript copied", Toast.LENGTH_SHORT)
+            }
+        }
     }
 
     @Throws(Throwable::class)
@@ -94,6 +122,19 @@ class AudioTranscript(
         val transcript = responseJson.getString(JSON_TEXT)
         
         val finalTranscript = translateTranscriptIfEnabled(transcript, fmessage)
+        
+        // Store transcript for copy feature
+        val messageId = fmessage.key.messageID
+        if (messageId != null && finalTranscript.isNotBlank()) {
+            synchronized(transcriptStore) {
+                transcriptStore[messageId] = finalTranscript
+                // Keep store size manageable
+                if (transcriptStore.size > MAX_STORED_TRANSCRIPTS) {
+                    val oldestKey = transcriptStore.keys.first()
+                    transcriptStore.remove(oldestKey)
+                }
+            }
+        }
         
         val segments = buildTranscriptionSegments(
             responseJson = responseJson,
@@ -368,6 +409,7 @@ class AudioTranscript(
     )
 
     private companion object {
+        private const val MAX_STORED_TRANSCRIPTS = 100
         private const val PREF_AUDIO_TRANSCRIPTION = "audio_transcription"
         private const val PREF_TRANSCRIPTION_PROVIDER = "transcription_provider"
         private const val PREF_GROQ_API_KEY = "groq_api_key"

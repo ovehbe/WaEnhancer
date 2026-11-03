@@ -242,7 +242,7 @@ class OpenAITranslationProvider(
     
     override fun getId(): String = "openai"
     
-    override fun getBadge(): String = "aiT"
+    override fun getBadge(): String = "AIT"
     
     override fun isConfigured(): Boolean {
         return !getApiKey().isNullOrBlank()

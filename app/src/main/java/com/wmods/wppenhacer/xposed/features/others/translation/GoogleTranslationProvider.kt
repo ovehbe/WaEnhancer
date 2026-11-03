@@ -90,5 +90,5 @@ class GoogleTranslationProvider : TranslationProvider() {
     
     override fun getId(): String = "google"
     
-    override fun getBadge(): String = "gT"
+    override fun getBadge(): String = "GT"
 }
