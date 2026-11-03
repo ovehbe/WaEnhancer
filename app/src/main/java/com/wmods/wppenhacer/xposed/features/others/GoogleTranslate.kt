@@ -27,7 +27,7 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
     override fun doHook() {
         if (!xprefs.getBoolean("google_translate", false)) return
         // Independent of UnityMessageTranslation and its restricted language packs.
-        GoogleTranslateChatUi(classLoader, ::translateExtractText, ::getCurrentProvider, xprefs).install()
+        GoogleTranslateChatUi(classLoader, ::translateExtractText, ::getCurrentProvider, xprefs, ::translateWithResult).install()
         GoogleTranslateOutgoing(classLoader, xprefs, ::translateExtractText, ::getCurrentProvider).doHook()
     }
     
@@ -46,19 +46,19 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         
         return when (selectedProvider) {
             TranslationSettings.PROVIDER_OPENAI -> {
-                val isConfigured = openAIProvider.isConfigured()
+                val apiKey = xprefs.getString("translation_ai_api_key", null)
+                val isConfigured = !apiKey.isNullOrBlank()
+                
+                YukiLog.log("$TAG AI selected | API key present: $isConfigured (keyLen=${apiKey?.length ?: 0})")
                 
                 if (isConfigured) {
-                    YukiLog.log("$TAG ✓ Using AI provider (configured)")
                     openAIProvider
                 } else {
-                    YukiLog.log("$TAG ✗ AI selected but NOT configured (no API key) → fallback to Google")
-                    showConfigWarningOnce("AI provider selected but API key not set. Using Google.")
+                    showConfigWarningOnce("AI Translation: API key not configured. Using Google fallback.")
                     googleProvider
                 }
             }
             else -> {
-                YukiLog.log("$TAG Using Google provider (selected=$selectedProvider)")
                 googleProvider
             }
         }

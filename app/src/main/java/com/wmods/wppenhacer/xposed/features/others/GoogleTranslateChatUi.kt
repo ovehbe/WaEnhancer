@@ -49,7 +49,8 @@ internal class GoogleTranslateChatUi(
     private val loader: ClassLoader,
     private val translate: (String?, String, String) -> CompletableFuture<String?>,
     private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null,
-    private val modulePrefs: SharedPreferences? = null
+    private val modulePrefs: SharedPreferences? = null,
+    private val translateWithResult: ((String?, String, String) -> CompletableFuture<com.wmods.wppenhacer.xposed.features.others.translation.TranslationResult>)? = null
 ) {
     private val main = Handler(Looper.getMainLooper())
     // Module settings (read-only from WA): provider, API key, etc.
@@ -544,33 +545,52 @@ internal class GoogleTranslateChatUi(
     }
 
     private fun request(request: RequestKey): CompletableFuture<String?> {
-        // Check cache first
-        val provider = getProvider?.invoke()?.getId() ?: "google"
-        YukiLog.log("[TranslateUI] request() cache check: provider=$provider")
-        translationCache.get(request.id, request.target, provider)?.let {
-            YukiLog.log("[TranslateUI] ✓ request() cache HIT")
+        // Check cache first - try current provider
+        val currentProvider = getProvider?.invoke()?.getId() ?: "google"
+        translationCache.get(request.id, request.target, currentProvider)?.let {
             return CompletableFuture.completedFuture(it) 
         }
-        YukiLog.log("[TranslateUI] ✗ request() cache MISS → calling translate()")
         
         pending[request]?.let { return it }
         if (pending.size >= 32) return CompletableFuture<String?>().apply {
             completeExceptionally(IllegalStateException("Translation queue full"))
         }
-        val future = translate(request.text, request.source, request.target)
-        pending[request] = future
-        future.whenComplete { result, error ->
-            main.post {
-                pending.remove(request)
-                if (error == null && result != null) {
-                    // Store in cache with provider
-                    translationCache.put(request.id, request.target, provider, result)
-                } else {
-                    failures[request] = SystemClock.elapsedRealtime() + 60_000
+        
+        // If translateWithResult available, use it to track provider/fallback
+        if (translateWithResult != null) {
+            val futureResult = translateWithResult.invoke(request.text, request.source, request.target)
+            val future = futureResult.thenApply { it.text }
+            
+            pending[request] = future
+            futureResult.whenComplete { result, error ->
+                main.post {
+                    pending.remove(request)
+                    if (error == null && result != null) {
+                        // Store with actual provider - fallback results cached as "google"
+                        val cacheProviderId = result.getCacheProviderId()
+                        translationCache.put(request.id, request.target, cacheProviderId, result.text ?: "")
+                    } else {
+                        failures[request] = SystemClock.elapsedRealtime() + 60_000
+                    }
                 }
             }
+            return future
+        } else {
+            // Fallback: use plain translate (legacy path)
+            val future = translate(request.text, request.source, request.target)
+            pending[request] = future
+            future.whenComplete { result, error ->
+                main.post {
+                    pending.remove(request)
+                    if (error == null && result != null) {
+                        translationCache.put(request.id, request.target, currentProvider, result)
+                    } else {
+                        failures[request] = SystemClock.elapsedRealtime() + 60_000
+                    }
+                }
+            }
+            return future
         }
-        return future
     }
 
     private fun installManualAction() {
