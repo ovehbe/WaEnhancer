@@ -33,11 +33,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 class GoogleTranslateOutgoing(
     loader: ClassLoader,
     preferences: SharedPreferences,
-    private val translate: (String?, String, String) -> CompletableFuture<String?>
+    private val translate: (String?, String, String) -> CompletableFuture<String?>,
+    private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null
 ) : Feature(loader, preferences) {
 
     private val main = Handler(Looper.getMainLooper())
-    private val settings get() = WppCore.getPrivPrefs()
+    private val settings get() = xprefs
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
     private val renderedViews = WeakHashMap<TextView, String>()
@@ -134,15 +135,11 @@ class GoogleTranslateOutgoing(
                     
                     YukiLog.log("$TAG Adding translate menu item to conversation toolbar")
                     
-                    // Get provider badge
+                    // Get provider badge from actual provider
                     val providerBadge = try {
-                        val prefs = WppCore.getPrivPrefs()
-                        val selectedProvider = TranslationSettings.getSelectedProvider(prefs)
-                        when (selectedProvider) {
-                            TranslationSettings.PROVIDER_OPENAI -> "AI"
-                            else -> "G"
-                        }
+                        getProvider?.invoke()?.getBadge() ?: "T"
                     } catch (e: Exception) {
+                        YukiLog.log("$TAG Error getting provider badge: ${e.message}")
                         "T"
                     }
                     

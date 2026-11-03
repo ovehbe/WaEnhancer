@@ -14,29 +14,56 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
     Feature(loader, preferences) {
     
     private val googleProvider = GoogleTranslationProvider()
-    private val openAIProvider by lazy { OpenAITranslationProvider(WppCore.getPrivPrefs()) }
+    private val openAIProvider by lazy { OpenAITranslationProvider(xprefs) }
+    
+    private companion object {
+        const val TAG = "[WaeOutTranslate]"
+        var lastToastTime = 0L
+    }
     
     override fun doHook() {
         if (!xprefs.getBoolean("google_translate", false)) return
         // Independent of UnityMessageTranslation and its restricted language packs.
-        GoogleTranslateChatUi(classLoader, ::translateWithProvider, ::getCurrentProvider).install()
-        GoogleTranslateOutgoing(classLoader, xprefs, ::translateWithProvider).doHook()
+        GoogleTranslateChatUi(classLoader, ::translateWithProvider, ::getCurrentProvider, xprefs).install()
+        GoogleTranslateOutgoing(classLoader, xprefs, ::translateWithProvider, ::getCurrentProvider).doHook()
     }
     
     private fun getCurrentProvider(): TranslationProvider {
-        val prefs = WppCore.getPrivPrefs()
-        val selectedProvider = TranslationSettings.getSelectedProvider(prefs)
+        val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
+        
+        YukiLog.log("$TAG getCurrentProvider: selected=$selectedProvider")
         
         return when (selectedProvider) {
             TranslationSettings.PROVIDER_OPENAI -> {
-                if (openAIProvider.isConfigured()) {
+                val isConfigured = openAIProvider.isConfigured()
+                YukiLog.log("$TAG AI provider configured: $isConfigured")
+                
+                if (isConfigured) {
                     openAIProvider
                 } else {
-                    YukiLog.log("Translation: AI provider not configured, falling back to Google")
+                    YukiLog.log("$TAG AI selected but not configured (no API key), using Google")
+                    showConfigWarningOnce("AI provider selected but API key not set. Using Google.")
                     googleProvider
                 }
             }
-            else -> googleProvider
+            else -> {
+                YukiLog.log("$TAG Using Google provider")
+                googleProvider
+            }
+        }
+    }
+    
+    private fun showConfigWarningOnce(message: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastToastTime > 60000) { // Once per minute max
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                android.widget.Toast.makeText(
+                    com.wmods.wppenhacer.xposed.core.FeatureLoader.mApp,
+                    message,
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+            lastToastTime = now
         }
     }
     
@@ -46,19 +73,21 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         languageDest: String
     ): CompletableFuture<String?> {
         val provider = getCurrentProvider()
+        val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
+        
+        YukiLog.log("$TAG translate: provider=${provider.getName()}, selected=$selectedProvider, text length=${text?.length ?: 0}")
+        
         val future = provider.translate(text, languageSource, languageDest)
         
         // Handle fallback if AI fails and fallback is enabled
-        val prefs = WppCore.getPrivPrefs()
-        val selectedProvider = TranslationSettings.getSelectedProvider(prefs)
-        
         if (selectedProvider == TranslationSettings.PROVIDER_OPENAI && 
-            TranslationSettings.shouldFallbackToGoogle(prefs)) {
+            TranslationSettings.shouldFallbackToGoogle(xprefs)) {
             return future.exceptionally { error ->
-                YukiLog.log("Translation: AI failed (${error.message}), falling back to Google")
+                YukiLog.log("$TAG AI translation failed (${error.message}), falling back to Google")
                 try {
                     googleProvider.translate(text, languageSource, languageDest).get()
                 } catch (e: Exception) {
+                    YukiLog.log("$TAG Google fallback also failed: ${e.message}")
                     null
                 }
             }

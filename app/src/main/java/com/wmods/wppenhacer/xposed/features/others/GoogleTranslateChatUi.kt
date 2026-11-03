@@ -1,6 +1,7 @@
 package com.wmods.wppenhacer.xposed.features.others
 
 import android.app.Activity
+import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -47,9 +48,11 @@ import java.util.concurrent.CompletableFuture
 internal class GoogleTranslateChatUi(
     private val loader: ClassLoader,
     private val translate: (String?, String, String) -> CompletableFuture<String?>,
-    private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null
+    private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null,
+    private val prefs: SharedPreferences? = null
 ) {
     private val main = Handler(Looper.getMainLooper())
+    private val settings get() = prefs ?: WppCore.getPrivPrefs()
 
     private data class RequestKey(
         val chat: String,
@@ -75,7 +78,6 @@ internal class GoogleTranslateChatUi(
             size > 500
     }
     private val reported = HashSet<String>()
-    private val settings get() = WppCore.getPrivPrefs()
     private fun key(chat: String?) = "google_translation_v3_" + (chat ?: "default")
     private fun legacyKey(chat: String?) = "google_translation_v2_" + (chat ?: "default")
     private fun config(chat: String?): GoogleTranslationConfig = GoogleTranslateSettings.resolve(
