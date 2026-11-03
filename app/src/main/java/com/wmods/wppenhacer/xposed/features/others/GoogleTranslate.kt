@@ -17,11 +17,11 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
     private val googleProvider = GoogleTranslationProvider()
     private val openAIProvider by lazy { OpenAITranslationProvider(xprefs) }
     
-    private companion object {
-        const val TAG = "[WaeOutTranslate]"
-        var lastConfigWarningTime = 0L
-        var lastAiFailureTime = 0L
-        var aiFailureShown = false
+    companion object {
+        private const val TAG = "[WaeOutTranslate]"
+        private var lastConfigWarningTime = 0L
+        private var lastAiFailureTime = 0L
+        private var aiFailureShown = false
         
         @Volatile
         private var instanceRef: GoogleTranslate? = null
