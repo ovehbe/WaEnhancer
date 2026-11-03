@@ -225,9 +225,23 @@ class GoogleTranslateOutgoing(
                 return
             }
             
-            val originalText = entryEditText.text?.toString()
+            var originalText = entryEditText.text?.toString()
             if (originalText.isNullOrBlank()) {
                 YukiLog.log("$TAG Empty text")
+                isTranslating.set(false)
+                Utils.showToast("Enter a message first", Toast.LENGTH_SHORT)
+                return
+            }
+            
+            // Check if text already has our format (user tapped T twice)
+            // Format: "translation\n\n_original_" or multi-line italics
+            originalText = extractOriginalFromFormatted(originalText)
+            
+            // Trim whitespace including NBSP and zero-width characters
+            originalText = cleanText(originalText)
+            
+            if (originalText.isBlank()) {
+                YukiLog.log("$TAG Empty text after cleaning")
                 isTranslating.set(false)
                 Utils.showToast("Enter a message first", Toast.LENGTH_SHORT)
                 return
@@ -278,14 +292,9 @@ class GoogleTranslateOutgoing(
                             
                             // Format message: translation, blank line, original in italics
                             val formattedText = if (includeOriginal()) {
-                                StringBuilder(translated)
-                                    .append("\n\n")
-                                    .append("_")
-                                    .append(originalText)
-                                    .append("_")
-                                    .toString()
+                                formatTranslatedMessage(translated, originalText)
                             } else {
-                                translated
+                                cleanText(translated)
                             }
                             
                             // Set formatted text
@@ -325,6 +334,70 @@ class GoogleTranslateOutgoing(
         }
     }
 
+    private fun cleanText(text: String): String {
+        // Remove trailing/leading whitespace including NBSP (\u00A0) and zero-width characters
+        return text.trim()
+            .replace("\u00A0", " ")  // NBSP to space
+            .replace("\u200B", "")   // Zero-width space
+            .replace("\u200C", "")   // Zero-width non-joiner
+            .replace("\u200D", "")   // Zero-width joiner
+            .replace("\uFEFF", "")   // Zero-width no-break space
+            .trim()
+    }
+    
+    private fun extractOriginalFromFormatted(text: String): String {
+        // Check if text has our format: "translation\n\n_original_"
+        // Look for \n\n followed by underscore patterns
+        val lines = text.split("\n")
+        
+        // Find the blank line separator
+        var blankLineIndex = -1
+        for (i in 0 until lines.size - 1) {
+            if (lines[i].isEmpty() && i < lines.size - 1) {
+                // Check if lines after blank are italicized
+                val nextLine = lines[i + 1]
+                if (nextLine.startsWith("_") && nextLine.endsWith("_")) {
+                    blankLineIndex = i
+                    break
+                }
+            }
+        }
+        
+        if (blankLineIndex >= 0) {
+            // Extract original part (after blank line)
+            val originalLines = lines.subList(blankLineIndex + 1, lines.size)
+            return originalLines.joinToString("\n") { line ->
+                // Remove surrounding underscores
+                if (line.startsWith("_") && line.endsWith("_") && line.length > 2) {
+                    line.substring(1, line.length - 1)
+                } else {
+                    line
+                }
+            }
+        }
+        
+        return text
+    }
+    
+    private fun formatTranslatedMessage(translated: String, original: String): String {
+        val cleanTranslated = cleanText(translated)
+        val cleanOriginal = cleanText(original)
+        
+        // Split original into lines and italicize each non-empty line
+        val italicLines = cleanOriginal.split("\n")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .joinToString("\n") { "_${it}_" }
+        
+        return buildString {
+            append(cleanTranslated)
+            if (italicLines.isNotEmpty()) {
+                append("\n\n")
+                append(italicLines)
+            }
+        }
+    }
+    
     private fun installOutgoingRendering() {
         ConversationItemListener.conversationListeners.add(object :
             ConversationItemListener.OnConversationItemListener() {
