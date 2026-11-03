@@ -508,10 +508,13 @@ internal class GoogleTranslateChatUi(
         
         // Check cache (provider determined at translation time)
         val provider = getProvider?.invoke()?.getId() ?: "google"
+        YukiLog.log("[TranslateUI] Cache lookup: msgId=${message.key.messageID.take(8)} provider=$provider")
         translationCache.get(message.key.messageID, selection.target, provider)?.let {
+            YukiLog.log("[TranslateUI] ✓ Cache HIT: ${it.take(30)}...")
             render(textView, it)
             return
         }
+        YukiLog.log("[TranslateUI] ✗ Cache MISS → will translate")
         
         if ((failures[request] ?: 0L) > SystemClock.elapsedRealtime()) return
         val future = request(request)
@@ -543,9 +546,12 @@ internal class GoogleTranslateChatUi(
     private fun request(request: RequestKey): CompletableFuture<String?> {
         // Check cache first
         val provider = getProvider?.invoke()?.getId() ?: "google"
-        translationCache.get(request.id, request.target, provider)?.let { 
+        YukiLog.log("[TranslateUI] request() cache check: provider=$provider")
+        translationCache.get(request.id, request.target, provider)?.let {
+            YukiLog.log("[TranslateUI] ✓ request() cache HIT")
             return CompletableFuture.completedFuture(it) 
         }
+        YukiLog.log("[TranslateUI] ✗ request() cache MISS → calling translate()")
         
         pending[request]?.let { return it }
         if (pending.size >= 32) return CompletableFuture<String?>().apply {

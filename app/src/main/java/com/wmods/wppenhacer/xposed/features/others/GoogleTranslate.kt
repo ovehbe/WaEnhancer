@@ -44,23 +44,21 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
     private fun getCurrentProvider(): TranslationProvider {
         val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
         
-        YukiLog.log("$TAG getCurrentProvider: selected=$selectedProvider")
-        
         return when (selectedProvider) {
             TranslationSettings.PROVIDER_OPENAI -> {
                 val isConfigured = openAIProvider.isConfigured()
-                YukiLog.log("$TAG AI provider configured: $isConfigured")
                 
                 if (isConfigured) {
+                    YukiLog.log("$TAG ✓ Using AI provider (configured)")
                     openAIProvider
                 } else {
-                    YukiLog.log("$TAG AI selected but not configured (no API key), using Google")
+                    YukiLog.log("$TAG ✗ AI selected but NOT configured (no API key) → fallback to Google")
                     showConfigWarningOnce("AI provider selected but API key not set. Using Google.")
                     googleProvider
                 }
             }
             else -> {
-                YukiLog.log("$TAG Using Google provider")
+                YukiLog.log("$TAG Using Google provider (selected=$selectedProvider)")
                 googleProvider
             }
         }
@@ -99,25 +97,39 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         languageSource: String,
         languageDest: String
     ): CompletableFuture<TranslationResult> {
+        val startTime = System.currentTimeMillis()
         val provider = getCurrentProvider()
         val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
         
-        YukiLog.log("$TAG translate: provider=${provider.getName()}, selected=$selectedProvider, text length=${text?.length ?: 0}")
+        YukiLog.log("$TAG ═══ Translation Request ═══")
+        YukiLog.log("$TAG Provider: ${provider.getName()} [${provider.getId()}]")
+        YukiLog.log("$TAG Selected: $selectedProvider | Text: ${text?.take(30)}... (${text?.length ?: 0} chars)")
         
         val future = provider.translateWithResult(text, languageSource, languageDest)
+        
+        // Log result
+        future.whenComplete { result, error ->
+            val latency = System.currentTimeMillis() - startTime
+            if (error == null && result != null) {
+                YukiLog.log("$TAG ✓ Success [${result.providerName}] ${latency}ms | Result: ${result.text?.take(30)}...")
+            } else {
+                YukiLog.log("$TAG ✗ Failed [${provider.getName()}] ${latency}ms | Error: ${error?.message}")
+            }
+        }
         
         // Handle fallback if AI fails and fallback is enabled
         if (selectedProvider == TranslationSettings.PROVIDER_OPENAI && 
             TranslationSettings.shouldFallbackToGoogle(xprefs)) {
             return future.exceptionally { error ->
                 val errorMsg = error.message ?: "Unknown error"
-                YukiLog.log("$TAG AI translation failed ($errorMsg), falling back to Google")
+                YukiLog.log("$TAG ⚠ AI translation failed ($errorMsg) → fallback to Google")
                 showAiFailureOnce(errorMsg)
                 try {
                     val googleText = googleProvider.translate(text, languageSource, languageDest).get()
+                    YukiLog.log("$TAG ✓ Google fallback succeeded")
                     TranslationResult.fallback(googleText)
                 } catch (e: Exception) {
-                    YukiLog.log("$TAG Google fallback also failed: ${e.message}")
+                    YukiLog.log("$TAG ✗ Google fallback also failed: ${e.message}")
                     TranslationResult.fallback(null)
                 }
             }
