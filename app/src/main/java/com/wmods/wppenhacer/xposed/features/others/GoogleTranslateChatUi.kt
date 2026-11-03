@@ -120,7 +120,7 @@ internal class GoogleTranslateChatUi(
     fun install() {
         MenuHome.addMenuItem { menu, activity ->
             if (menu.findItem(R.string.google_translate) == null) {
-                menu.add(0, R.string.google_translate, 0, "Google Translate")
+                menu.add(0, R.string.google_translate, 0, "Live Translate")
                     .setOnMenuItemClickListener { showSettings(activity, null); true }
             }
         }
@@ -246,7 +246,7 @@ internal class GoogleTranslateChatUi(
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
             addView(TextView(activity).apply {
-                text = "Google Translate"; textSize =
+                text = "Live Translate"; textSize =
                 17f; setTextColor(DesignUtils.getPrimaryTextColor())
             })
             addView(TextView(activity).apply {

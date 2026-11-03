@@ -67,5 +67,5 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         return future
     }
 
-    override fun getPluginName() = "Google Translate"
+    override fun getPluginName() = "Live Translate"
 }

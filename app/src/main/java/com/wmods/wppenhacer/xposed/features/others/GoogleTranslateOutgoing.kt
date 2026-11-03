@@ -17,6 +17,7 @@ import com.wmods.wppenhacer.xposed.core.WppCore
 import com.wmods.wppenhacer.xposed.core.components.FMessageWpp
 import com.wmods.wppenhacer.xposed.core.devkit.Unobfuscator
 import com.wmods.wppenhacer.xposed.features.listeners.ConversationItemListener
+import com.wmods.wppenhacer.xposed.features.others.translation.TranslationSettings
 import com.wmods.wppenhacer.xposed.utils.ReflectionUtils
 import com.wmods.wppenhacer.xposed.utils.Utils
 import com.wmods.wppenhacer.xposed.utils.YukiLog
@@ -133,21 +134,24 @@ class GoogleTranslateOutgoing(
                     
                     YukiLog.log("$TAG Adding translate menu item to conversation toolbar")
                     
+                    // Get provider badge
+                    val providerBadge = try {
+                        val prefs = WppCore.getPrivPrefs()
+                        val selectedProvider = TranslationSettings.getSelectedProvider(prefs)
+                        when (selectedProvider) {
+                            TranslationSettings.PROVIDER_OPENAI -> "AI"
+                            else -> "G"
+                        }
+                    } catch (e: Exception) {
+                        "T"
+                    }
+                    
                     val menuItem = menu.add(0, MENU_ITEM_ID, 0, "Translate")
                     menuItem.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
                     
-                    // Try to use a translate icon, fall back to text
-                    try {
-                        val iconId = Utils.getID("ic_translate", "drawable")
-                        if (iconId != 0) {
-                            menuItem.setIcon(iconId)
-                        } else {
-                            menuItem.setTitle("T")
-                        }
-                    } catch (e: Exception) {
-                        menuItem.setTitle("T")
-                        YukiLog.log("$TAG Using text 'T' instead of icon")
-                    }
+                    // Use text badge showing provider
+                    menuItem.setTitle(providerBadge)
+                    YukiLog.log("$TAG Menu item showing badge: $providerBadge")
                     
                     menuItem.setOnMenuItemClickListener {
                         YukiLog.log("$TAG Translate menu item clicked")
