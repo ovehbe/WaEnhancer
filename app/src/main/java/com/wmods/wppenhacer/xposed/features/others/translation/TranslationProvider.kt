@@ -22,6 +22,19 @@ abstract class TranslationProvider {
     ): CompletableFuture<String?>
     
     /**
+     * Translate and return result with provider info
+     */
+    open fun translateWithResult(
+        text: String?,
+        sourceLanguage: String,
+        targetLanguage: String
+    ): CompletableFuture<TranslationResult> {
+        return translate(text, sourceLanguage, targetLanguage).thenApply { translated ->
+            TranslationResult(translated, getName(), getBadge())
+        }
+    }
+    
+    /**
      * Get the provider name for display and logging
      */
     abstract fun getName(): String

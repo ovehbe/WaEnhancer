@@ -534,8 +534,9 @@ internal class GoogleTranslateChatUi(
     private fun render(view: TextView, translation: String) {
         val original = renderedViews[view]?.original ?: android.text.SpannedString(view.text)
         if (original.toString().trim() == translation.trim()) return
+        val providerName = getProvider?.invoke()?.getName() ?: "Google Translate"
         val output =
-            SpannableStringBuilder(original).append("\n\nGoogle Translate\n").append(translation)
+            SpannableStringBuilder(original).append("\n\n$providerName\n").append(translation)
         renderedViews[view] = Rendered(original, output.toString())
         view.text = output
     }

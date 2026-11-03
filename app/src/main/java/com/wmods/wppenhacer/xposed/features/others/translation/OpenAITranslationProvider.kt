@@ -61,6 +61,27 @@ class OpenAITranslationProvider(
         }
     }
     
+    override fun translateWithResult(
+        text: String?,
+        sourceLanguage: String,
+        targetLanguage: String
+    ): CompletableFuture<TranslationResult> {
+        val startTime = System.currentTimeMillis()
+        
+        return translate(text, sourceLanguage, targetLanguage)
+            .thenApply { translated ->
+                val latency = System.currentTimeMillis() - startTime
+                val model = getModel()
+                YukiLog.log("$TAG Translation completed: model=$model, latency=${latency}ms")
+                TranslationResult.ai(translated, model)
+            }
+            .exceptionally { error ->
+                val latency = System.currentTimeMillis() - startTime
+                YukiLog.log("$TAG Translation failed: ${error.message}, latency=${latency}ms")
+                throw error
+            }
+    }
+    
     override fun translate(
         text: String?,
         sourceLanguage: String,
@@ -72,6 +93,7 @@ class OpenAITranslationProvider(
         
         val apiKey = getApiKey()
         if (apiKey.isNullOrBlank()) {
+            YukiLog.log("$TAG API key not configured")
             return CompletableFuture.failedFuture(
                 IOException("AI translation: API key not configured")
             )
@@ -86,6 +108,8 @@ class OpenAITranslationProvider(
             
             // Build the API request
             val url = "$baseUrl/chat/completions"
+            
+            YukiLog.log("$TAG Starting translation: url=$url, model=$model, textLen=${text?.length}")
             
             // Create strict prompt for translation
             val prompt = buildPrompt(text, targetLanguage)
@@ -117,17 +141,20 @@ class OpenAITranslationProvider(
             
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    YukiLog.log("$TAG API call failed: ${e.message}")
+                    YukiLog.log("$TAG Network failure: ${e.message}")
                     future.completeExceptionally(e)
                 }
 
                 override fun onResponse(call: Call, response: Response) {
                     response.use {
                         try {
+                            val statusCode = it.code
+                            YukiLog.log("$TAG HTTP $statusCode from $url")
+                            
                             if (!it.isSuccessful) {
-                                val error = it.body?.string() ?: "HTTP ${it.code}"
-                                YukiLog.log("$TAG API error: $error")
-                                throw IOException("AI translation HTTP ${it.code}")
+                                val error = it.body?.string()?.take(200) ?: "HTTP $statusCode"
+                                YukiLog.log("$TAG Error response: $error")
+                                throw IOException("AI translation HTTP $statusCode: $error")
                             }
                             
                             val responseBody = it.body?.string() ?: throw IOException("Empty response")
@@ -135,6 +162,7 @@ class OpenAITranslationProvider(
                             
                             val choices = json.optJSONArray("choices")
                             if (choices == null || choices.length() == 0) {
+                                YukiLog.log("$TAG No choices in response")
                                 throw IOException("No choices in response")
                             }
                             
@@ -142,13 +170,14 @@ class OpenAITranslationProvider(
                             val translated = message?.optString("content")?.trim()
                             
                             if (translated.isNullOrBlank()) {
+                                YukiLog.log("$TAG Empty translation content")
                                 throw IOException("Empty translation from AI")
                             }
                             
-                            YukiLog.log("$TAG Translation success: ${translated.take(50)}...")
+                            YukiLog.log("$TAG Success: ${translated.take(50)}...")
                             future.complete(translated)
                         } catch (e: Exception) {
-                            YukiLog.log("$TAG Response parsing failed: ${e.message}")
+                            YukiLog.log("$TAG Parse error: ${e.message}")
                             future.completeExceptionally(e)
                         }
                     }
