@@ -182,6 +182,13 @@
                 app:summary="Use Google Translate when AI fails"
                 app:title="Fallback to Google" />
 
+            <EditTextPreference
+                app:dependency="google_translate"
+                app:iconSpaceReserved="false"
+                app:key="translation_ai_global_prompt"
+                app:summary="@string/translation_ai_global_prompt_sum"
+                app:title="@string/translation_ai_global_prompt_title" />
+
         </PreferenceCategory>
 
         <rikka.material.preference.MaterialSwitchPreference

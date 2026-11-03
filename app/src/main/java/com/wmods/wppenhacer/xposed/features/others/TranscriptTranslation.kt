@@ -3,73 +3,152 @@ package com.wmods.wppenhacer.xposed.features.others
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Color
+import android.graphics.Typeface
+import android.os.Handler
+import android.os.Looper
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
-import com.wmods.wppenhacer.xposed.utils.YukiLog
+import com.wmods.wppenhacer.xposed.core.WppCore
+import java.util.concurrent.CompletableFuture
 
 /**
  * Translates voice note transcripts when Live Translate is enabled for the chat.
- * Adds a Copy button to transcript views.
+ * Adds a visible Copy button to transcript views.
  */
 object TranscriptTranslation {
     
-    private const val TAG = "[TranscriptTranslate]"
+    private val main = Handler(Looper.getMainLooper())
     
     /**
-     * Translate transcript text for a chat if Live Translate is enabled
+     * Enhance transcript view: add translation and copy button
+     * Called from ConversationItemListener when transcript view is bound
      */
-    fun translateTranscript(
+    fun enhanceTranscriptView(
+        transcriptContainer: ViewGroup,
         transcriptText: String,
-        chatJid: String?,
-        targetLang: String?
-    ): String? {
-        if (transcriptText.isBlank() || targetLang.isNullOrBlank()) {
-            return null
+        chatJid: String?
+    ) {
+        if (transcriptText.isBlank()) return
+        
+        val config = getTranslateConfig(chatJid)
+        if (!config.enabled || config.targetLang.isNullOrBlank()) {
+            return
         }
         
-        val translator = GoogleTranslate.getInstance() ?: run {
-            YukiLog.log("$TAG Translator instance not available")
-            return null
-        }
-        
-        return try {
-            val result = translator.translateWithResult(
-                text = transcriptText,
-                languageSource = "auto",
-                languageDest = targetLang,
-                bypassCache = false,
-                customPrompt = null
-            ).get()
-            
-            result.text
-        } catch (e: Exception) {
-            YukiLog.log("$TAG Translation failed: ${e.message}")
-            null
+        translateTranscriptAsync(transcriptText, chatJid, config.targetLang, config.perChatPrompt) { translation ->
+            main.post {
+                if (translation != null) {
+                    showTranslationUnderTranscript(transcriptContainer, translation)
+                }
+                addCopyButton(transcriptContainer, transcriptText, translation)
+            }
         }
     }
     
-    /**
-     * Add copy button to transcript view
-     */
-    fun addCopyButton(
-        transcriptView: TextView,
-        transcriptText: String,
-        translationText: String?
-    ) {
-        val context = transcriptView.context ?: return
+    private data class TranslateConfig(
+        val enabled: Boolean,
+        val targetLang: String?,
+        val perChatPrompt: String?
+    )
+    
+    private fun getTranslateConfig(chatJid: String?): TranslateConfig {
+        val prefs = WppCore.getPrivPrefs()
+        val key = "google_translation_v3_" + (chatJid ?: "default")
+        val configJson = prefs.getString(key, null)
         
-        transcriptView.setOnLongClickListener {
-            val textToCopy = if (translationText.isNullOrBlank()) {
-                transcriptText
-            } else {
-                "$transcriptText\n\nTranslation: $translationText"
+        val enabled = configJson != null
+        var targetLang: String? = null
+        
+        if (configJson != null) {
+            try {
+                val obj = org.json.JSONObject(configJson)
+                targetLang = obj.optString("targetLanguage", null)
+            } catch (e: Exception) {
+                //Ignore parse errors
             }
-            
-            copyToClipboard(context, textToCopy)
-            true
         }
+        
+        val promptKey = "google_translation_ai_prompt_$chatJid"
+        val perChatPrompt = prefs.getString(promptKey, null)
+        
+        return TranslateConfig(enabled, targetLang, perChatPrompt)
+    }
+    
+    private fun translateTranscriptAsync(
+        text: String,
+        chatJid: String?,
+        targetLang: String,
+        perChatPrompt: String?,
+        callback: (String?) -> Unit
+    ) {
+        val translator = GoogleTranslate.getInstance()
+        if (translator == null) {
+            callback(null)
+            return
+        }
+        
+        CompletableFuture.runAsync {
+            try {
+                val result = translator.translateWithResult(
+                    text = text,
+                    languageSource = "auto",
+                    languageDest = targetLang,
+                    bypassCache = false,
+                    customPrompt = perChatPrompt
+                ).get()
+                
+                callback(result.text)
+            } catch (e: Exception) {
+                callback(null)
+            }
+        }
+    }
+    
+    private fun showTranslationUnderTranscript(container: ViewGroup, translation: String) {
+        val existing = container.findViewWithTag<TextView>("transcript_translation")
+        if (existing != null) {
+            existing.text = "Translation: $translation"
+            return
+        }
+        
+        val translationView = TextView(container.context).apply {
+            tag = "transcript_translation"
+            text = "Translation: $translation"
+            textSize = 14f
+            setTextColor(Color.parseColor("#888888"))
+            setPadding(0, 8, 0, 0)
+        }
+        
+        container.addView(translationView)
+    }
+    
+    private fun addCopyButton(container: ViewGroup, transcript: String, translation: String?) {
+        val existing = container.findViewWithTag<ImageView>("transcript_copy_button")
+        if (existing != null) return
+        
+        val copyButton = TextView(container.context).apply {
+            tag = "transcript_copy_button"
+            text = "📋"
+            textSize = 16f
+            setPadding(12, 12, 12, 12)
+            gravity = Gravity.CENTER
+            setOnClickListener {
+                val textToCopy = if (translation.isNullOrBlank()) {
+                    transcript
+                } else {
+                    "$transcript\n\nTranslation: $translation"
+                }
+                copyToClipboard(context, textToCopy)
+            }
+        }
+        
+        container.addView(copyButton)
     }
     
     private fun copyToClipboard(context: Context, text: String) {
@@ -80,7 +159,7 @@ object TranscriptTranslation {
             
             Toast.makeText(context, "Transcript copied", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            YukiLog.log("$TAG Copy failed: ${e.message}")
+            // Silent fail
         }
     }
 }

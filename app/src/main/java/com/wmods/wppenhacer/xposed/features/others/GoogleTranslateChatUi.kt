@@ -351,7 +351,26 @@ internal class GoogleTranslateChatUi(
                 draft = draft.copy(target = it); update()
             }
         }
+        
+        val promptKey = "google_translation_ai_prompt_$chat"
+        val currentPrompt = if (chat != null) waSettings.getString(promptKey, "") else ""
+        
+        val promptLayout = TextInputLayout(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply {
+                topMargin = Utils.dipToPixels(12)
+            }
+            hint = "AI Custom Prompt (this chat)"
+        }
+        val promptInput = TextInputEditText(ctx).apply {
+            setText(currentPrompt)
+            isSingleLine = false
+            maxLines = 3
+            hint = "e.g., Be formal and avoid slang"
+        }
+        promptLayout.addView(promptInput)
+        
         layout.addView(inherit); layout.addView(enabled); layout.addView(from); layout.addView(to)
+        if (chat != null) layout.addView(promptLayout)
         
         layout.addView(TextView(ctx).apply {
             text = "Outgoing Messages"
@@ -387,9 +406,16 @@ internal class GoogleTranslateChatUi(
                         YukiLog.log("[WaeOutTranslate] Dialog: Removing per-chat settings for $chat (using global)")
                         remove(key(chat))
                         remove(keyOutgoing(chat))
+                        remove("google_translation_ai_prompt_$chat")
                     } else {
                         if (chat != null) {
                             YukiLog.log("[WaeOutTranslate] Dialog: Saving settings for chat=$chat, outgoing enabled=${draftOutgoing.enabled}, target=${draftOutgoing.target}")
+                            val newPrompt = promptInput.text.toString().trim()
+                            if (newPrompt.isNotBlank()) {
+                                putString("google_translation_ai_prompt_$chat", newPrompt)
+                            } else {
+                                remove("google_translation_ai_prompt_$chat")
+                            }
                         }
                         putString(key(chat), draft.encode())
                         putString(keyOutgoing(chat), draftOutgoing.encode())
