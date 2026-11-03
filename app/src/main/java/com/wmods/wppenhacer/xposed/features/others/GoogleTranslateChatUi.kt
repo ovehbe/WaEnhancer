@@ -44,7 +44,8 @@ import java.util.concurrent.CompletableFuture
 /** All view/cache state is confined to the main thread. Never modifies stored messages. */
 internal class GoogleTranslateChatUi(
     private val loader: ClassLoader,
-    private val translate: (String?, String, String) -> CompletableFuture<String?>
+    private val translate: (String?, String, String) -> CompletableFuture<String?>,
+    private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null
 ) {
     private val main = Handler(Looper.getMainLooper())
 
