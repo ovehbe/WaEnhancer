@@ -84,44 +84,18 @@ internal class GoogleTranslateChatUi(
     private val reported = HashSet<String>()
     private fun key(chat: String?) = "google_translation_v3_" + (chat ?: "default")
     private fun legacyKey(chat: String?) = "google_translation_v2_" + (chat ?: "default")
-    private fun config(chat: String?): GoogleTranslationConfig = GoogleTranslateSettings.resolve(
-        chat?.let { waSettings.getString(key(it), null) },
-        waSettings.getString(key(null), null),
-        chat?.let { waSettings.getString(legacyKey(it), null) },
-        waSettings.getString(legacyKey(null), null)
-    )
+    
+    private fun config(chat: String?): GoogleTranslationConfig = 
+        GoogleTranslateSettings.config(chat, waSettings)
 
     private fun hasOverride(chat: String) =
         waSettings.contains(key(chat)) || waSettings.contains(legacyKey(chat))
 
-    private fun rawJid(jid: Any?): String? = runCatching {
-        GoogleTranslateSettings.normalizeChatId(
-            ReflectionUtils.callMethod(
-                jid,
-                "getRawString"
-            ) as? String
-        )
-    }.getOrNull()
+    private fun rawJid(jid: Any?): String? = GoogleTranslateSettings.rawJid(jid)
 
-    private fun chatId(jid: Any?): String? {
-        val raw = rawJid(jid) ?: return null
-        // GroupJid must never be passed through a person/LID conversion.
-        if (raw.endsWith("@g.us")) return raw
-        return rawJid(WppCore.getPhoneJidFromUserJid(jid)) ?: raw
-    }
+    private fun chatId(jid: Any?): String? = GoogleTranslateSettings.chatId(jid)
 
-    private fun messageChat(message: FMessageWpp): String? {
-        // Read the conversation JID, never the participant/sender JID.
-        val jid =
-            runCatching {
-                ReflectionUtils.getObjectField(
-                    message.key.thisObject,
-                    "A00"
-                )
-            }.getOrNull()
-        return chatId(jid) ?: chatId(message.key.remoteJid.phoneJid)
-        ?: chatId(message.key.remoteJid.userJid)
-    }
+    private fun messageChat(message: FMessageWpp): String? = GoogleTranslateSettings.messageChat(message)
 
     private fun reportOnce(reason: String) {
         if (reported.add(reason)) YukiLog.log("Google Translate: $reason")
