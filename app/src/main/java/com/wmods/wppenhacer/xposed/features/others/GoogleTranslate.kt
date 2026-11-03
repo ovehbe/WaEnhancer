@@ -2,74 +2,28 @@ package com.wmods.wppenhacer.xposed.features.others
 
 import android.content.SharedPreferences
 import com.wmods.wppenhacer.xposed.core.Feature
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.Dispatcher
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import org.json.JSONArray
-import java.io.IOException
-import java.net.URLEncoder
+import com.wmods.wppenhacer.xposed.features.others.translation.GoogleTranslationProvider
+import com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
 
 class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
     Feature(loader, preferences) {
-    private val client by lazy {
-        OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS)
-            .dispatcher(Dispatcher().apply { maxRequests = 4; maxRequestsPerHost = 4 }).build()
-    }
-
+    
+    private val googleProvider = GoogleTranslationProvider()
+    
     override fun doHook() {
         if (!xprefs.getBoolean("google_translate", false)) return
         // Independent of UnityMessageTranslation and its restricted language packs.
-        GoogleTranslateChatUi(classLoader, ::translateGoogle).install()
-        GoogleTranslateOutgoing(classLoader, xprefs, ::translateGoogle).doHook()
+        GoogleTranslateChatUi(classLoader, ::translateWithProvider).install()
+        GoogleTranslateOutgoing(classLoader, xprefs, ::translateWithProvider).doHook()
     }
-
-    fun translateGoogle(
+    
+    private fun translateWithProvider(
         text: String?,
         languageSource: String,
         languageDest: String
     ): CompletableFuture<String?> {
-        if (text.isNullOrBlank()) return CompletableFuture.completedFuture(text)
-        val future = CompletableFuture<String?>()
-        try {
-            val url = "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=" +
-                    URLEncoder.encode(languageSource, "UTF-8") + "&tl=" +
-                    URLEncoder.encode(languageDest, "UTF-8") + "&q=" + URLEncoder.encode(
-                text,
-                "UTF-8"
-            )
-            client.newCall(Request.Builder().url(url).build()).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    future.completeExceptionally(e)
-                }
-
-                override fun onResponse(call: Call, response: Response) {
-                    response.use {
-                        try {
-                            if (!it.isSuccessful) throw IOException("Translation HTTP ${it.code}")
-                            val parts = JSONArray(it.body.string()).getJSONArray(0)
-                            val translated = buildString {
-                                for (i in 0 until parts.length()) {
-                                    val part = parts.optJSONArray(i) ?: continue
-                                    if (!part.isNull(0)) append(part.getString(0))
-                                }
-                            }
-                            if (translated.isBlank()) throw IOException("Empty translation")
-                            future.complete(translated)
-                        } catch (e: Exception) {
-                            future.completeExceptionally(e)
-                        }
-                    }
-                }
-            })
-        } catch (e: Exception) {
-            future.completeExceptionally(e)
-        }
-        return future
+        return googleProvider.translate(text, languageSource, languageDest)
     }
 
     override fun getPluginName() = "Google Translate"

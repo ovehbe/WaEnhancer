@@ -1,0 +1,43 @@
+package com.wmods.wppenhacer.xposed.features.others.translation
+
+import java.util.concurrent.CompletableFuture
+
+/**
+ * Abstract translation provider interface.
+ * Implementations can use Google Translate, OpenAI, or other services.
+ */
+abstract class TranslationProvider {
+    
+    /**
+     * Translate text from source language to target language.
+     * @param text The text to translate
+     * @param sourceLanguage The source language code (e.g. "auto", "en", "id")
+     * @param targetLanguage The target language code (e.g. "en", "id")
+     * @return CompletableFuture with the translated text, or null on failure
+     */
+    abstract fun translate(
+        text: String?,
+        sourceLanguage: String,
+        targetLanguage: String
+    ): CompletableFuture<String?>
+    
+    /**
+     * Get the provider name for display and logging
+     */
+    abstract fun getName(): String
+    
+    /**
+     * Get a short identifier for this provider (e.g. "google", "openai")
+     */
+    abstract fun getId(): String
+    
+    /**
+     * Get a short display badge (e.g. "G" for Google, "AI" for OpenAI)
+     */
+    abstract fun getBadge(): String
+    
+    /**
+     * Check if the provider is properly configured
+     */
+    open fun isConfigured(): Boolean = true
+}
