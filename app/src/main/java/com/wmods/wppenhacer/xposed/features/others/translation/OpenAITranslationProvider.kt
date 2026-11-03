@@ -36,7 +36,7 @@ class OpenAITranslationProvider(
         const val PREF_MODEL = "translation_ai_model"
         const val PREF_TEMPERATURE = "translation_ai_temperature"
         const val DEFAULT_BASE_URL = "https://api.openai.com/v1"
-        const val DEFAULT_MODEL = "gpt-3.5-turbo"
+        const val DEFAULT_MODEL = "gpt-4o-mini"
         const val DEFAULT_TEMPERATURE = 0.3f
     }
     
