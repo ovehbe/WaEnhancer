@@ -41,7 +41,21 @@ class OpenAITranslationProvider(
     }
     
     private fun getBaseUrl(): String {
-        return prefs.getString(PREF_BASE_URL, DEFAULT_BASE_URL)?.trim() ?: DEFAULT_BASE_URL
+        return normalizeBaseUrl(prefs.getString(PREF_BASE_URL, DEFAULT_BASE_URL)?.trim() ?: DEFAULT_BASE_URL)
+    }
+    
+    /**
+     * Normalize base URL: ensure it ends with /v1 or another version segment
+     * Don't double-append if already present
+     */
+    private fun normalizeBaseUrl(url: String): String {
+        val trimmed = url.trimEnd('/')
+        // Check if already has a version segment like /v1, /v1beta, etc
+        return if (trimmed.matches(Regex(".*/(v\\d+|v\\d+[a-z]+)$"))) {
+            trimmed
+        } else {
+            "$trimmed/v1"
+        }
     }
     
     private fun getApiKey(): String? {
@@ -106,12 +120,7 @@ class OpenAITranslationProvider(
             val model = getModel()
             val temperature = getTemperature()
             
-            // Build the API request
             val url = "$baseUrl/chat/completions"
-            
-            YukiLog.log("$TAG Starting translation: url=$url, model=$model, textLen=${text?.length}")
-            
-            // Create strict prompt for translation
             val prompt = buildPrompt(text, targetLanguage)
             
             val requestBody = JSONObject().apply {
@@ -137,11 +146,8 @@ class OpenAITranslationProvider(
                 .post(requestBody.toRequestBody("application/json".toMediaType()))
                 .build()
             
-            YukiLog.log("$TAG Calling AI API: $url with model $model")
-            
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    YukiLog.log("$TAG Network failure: ${e.message}")
                     future.completeExceptionally(e)
                 }
 
@@ -149,15 +155,13 @@ class OpenAITranslationProvider(
                     response.use {
                         try {
                             val statusCode = it.code
-                            YukiLog.log("$TAG HTTP $statusCode from $url")
+                            val responseBody = it.body?.string() ?: ""
                             
                             if (!it.isSuccessful) {
-                                val error = it.body?.string()?.take(200) ?: "HTTP $statusCode"
-                                YukiLog.log("$TAG Error response: $error")
-                                throw IOException("AI translation HTTP $statusCode: $error")
+                                val errorSnippet = responseBody.take(100)
+                                throw IOException("HTTP $statusCode: $errorSnippet")
                             }
                             
-                            val responseBody = it.body?.string() ?: throw IOException("Empty response")
                             val json = JSONObject(responseBody)
                             
                             val choices = json.optJSONArray("choices")
@@ -242,15 +246,8 @@ class OpenAITranslationProvider(
         }
         
         try {
-            // Normalize base URL: remove trailing slash, ensure it ends with /v1
-            var baseUrl = getBaseUrl().trim().trimEnd('/')
-            if (!baseUrl.endsWith("/v1")) {
-                baseUrl = "$baseUrl/v1"
-            }
+            val baseUrl = getBaseUrl()
             val url = "$baseUrl/models"
-            
-            YukiLog.log("$TAG Fetching models from: $url")
-            
             val request = Request.Builder()
                 .url(url)
                 .addHeader("Authorization", "Bearer $apiKey")
@@ -259,7 +256,6 @@ class OpenAITranslationProvider(
             
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    YukiLog.log("$TAG fetchModels network failure: ${e.message}")
                     callback(Result.failure(e), null, e.message)
                 }
 
@@ -268,8 +264,6 @@ class OpenAITranslationProvider(
                         try {
                             val statusCode = it.code
                             val responseBody = it.body?.string() ?: ""
-                            
-                            YukiLog.log("$TAG fetchModels HTTP $statusCode, body length: ${responseBody.length}")
                             
                             if (!it.isSuccessful) {
                                 val errorSnippet = responseBody.take(200)

@@ -115,7 +115,7 @@ class TranslationCache(context: Context) {
  * SQLite helper for persistent translation cache
  */
 private class TranslationDatabaseHelper(context: Context) : 
-    SQLiteOpenHelper(context, "translation_cache.db", null, 1) {
+    SQLiteOpenHelper(context, "translation_cache.db", null, 2) {
     
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
@@ -134,9 +134,10 @@ private class TranslationDatabaseHelper(context: Context) :
     }
     
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // For now, just drop and recreate on upgrade
-        db.execSQL("DROP TABLE IF EXISTS translations")
-        onCreate(db)
+        if (oldVersion < 2) {
+            // v1->v2: Clear old 'openai' fallback results that were mislabeled
+            db.execSQL("DELETE FROM translations WHERE provider = 'openai'")
+        }
     }
     
     fun get(messageId: String, targetLang: String, provider: String): String? {

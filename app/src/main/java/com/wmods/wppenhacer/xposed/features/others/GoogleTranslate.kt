@@ -79,7 +79,8 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
     }
     
     private fun showAiFailureOnce(message: String) {
-        if (!aiFailureShown) {
+        val now = System.currentTimeMillis()
+        if (now - lastAiFailureTime > 60000) { // Rate-limited: once per 60 seconds
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 android.widget.Toast.makeText(
                     com.wmods.wppenhacer.xposed.core.FeatureLoader.mApp,
@@ -87,8 +88,7 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
                     android.widget.Toast.LENGTH_LONG
                 ).show()
             }
-            aiFailureShown = true
-            lastAiFailureTime = System.currentTimeMillis()
+            lastAiFailureTime = now
         }
     }
     
@@ -97,33 +97,14 @@ class GoogleTranslate(loader: ClassLoader, preferences: SharedPreferences) :
         languageSource: String,
         languageDest: String
     ): CompletableFuture<TranslationResult> {
-        val startTime = System.currentTimeMillis()
         val provider = getCurrentProvider()
-        val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
-        
-        YukiLog.log("$TAG ═══ Translation Request ═══")
-        YukiLog.log("$TAG Provider: ${provider.getName()} [${provider.getId()}]")
-        YukiLog.log("$TAG Selected: $selectedProvider | Text: ${text?.take(30)}... (${text?.length ?: 0} chars)")
-        
         val future = provider.translateWithResult(text, languageSource, languageDest)
         
-        // Log result
-        future.whenComplete { result, error ->
-            val latency = System.currentTimeMillis() - startTime
-            if (error == null && result != null) {
-                YukiLog.log("$TAG ✓ Success [${result.providerName}] ${latency}ms | Result: ${result.text?.take(30)}...")
-            } else {
-                YukiLog.log("$TAG ✗ Failed [${provider.getName()}] ${latency}ms | Error: ${error?.message}")
-            }
-        }
-        
-        // Handle fallback if AI fails and fallback is enabled
+        val selectedProvider = TranslationSettings.getSelectedProvider(xprefs)
         if (selectedProvider == TranslationSettings.PROVIDER_OPENAI && 
             TranslationSettings.shouldFallbackToGoogle(xprefs)) {
             return future.exceptionally { error ->
-                val errorMsg = error.message ?: "Unknown error"
-                YukiLog.log("$TAG ⚠ AI translation failed ($errorMsg) → fallback to Google")
-                showAiFailureOnce(errorMsg)
+                showAiFailureOnce(error.message ?: "Unknown error")
                 try {
                     val googleText = googleProvider.translate(text, languageSource, languageDest).get()
                     YukiLog.log("$TAG ✓ Google fallback succeeded")

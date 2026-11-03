@@ -41,8 +41,8 @@ android {
         minSdk = 28
         //noinspection OldTargetApi
         targetSdk = 34
-        versionCode = 191
-        versionName = "1.8.11 ($gitHash)"
+        versionCode = 192
+        versionName = "1.8.12 ($gitHash)"
         multiDexEnabled = true
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -172,6 +172,8 @@ kotlin {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("org.mockito:mockito-core:5.8.0")
     implementation(libs.colorpicker)
     implementation(libs.dexkit)
     implementation(libs.flatbuffers)
