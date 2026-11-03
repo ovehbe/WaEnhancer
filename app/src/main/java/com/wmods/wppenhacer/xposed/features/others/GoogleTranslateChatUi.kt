@@ -49,10 +49,13 @@ internal class GoogleTranslateChatUi(
     private val loader: ClassLoader,
     private val translate: (String?, String, String) -> CompletableFuture<String?>,
     private val getProvider: (() -> com.wmods.wppenhacer.xposed.features.others.translation.TranslationProvider)? = null,
-    private val prefs: SharedPreferences? = null
+    private val modulePrefs: SharedPreferences? = null
 ) {
     private val main = Handler(Looper.getMainLooper())
-    private val settings get() = prefs ?: WppCore.getPrivPrefs()
+    // Module settings (read-only from WA): provider, API key, etc.
+    private val moduleSettings get() = modulePrefs ?: WppCore.getPrivPrefs()
+    // WhatsApp writable settings: per-chat language preferences, cache
+    private val waSettings get() = WppCore.getPrivPrefs()
 
     private data class RequestKey(
         val chat: String,
@@ -81,14 +84,14 @@ internal class GoogleTranslateChatUi(
     private fun key(chat: String?) = "google_translation_v3_" + (chat ?: "default")
     private fun legacyKey(chat: String?) = "google_translation_v2_" + (chat ?: "default")
     private fun config(chat: String?): GoogleTranslationConfig = GoogleTranslateSettings.resolve(
-        chat?.let { settings.getString(key(it), null) },
-        settings.getString(key(null), null),
-        chat?.let { settings.getString(legacyKey(it), null) },
-        settings.getString(legacyKey(null), null)
+        chat?.let { waSettings.getString(key(it), null) },
+        waSettings.getString(key(null), null),
+        chat?.let { waSettings.getString(legacyKey(it), null) },
+        waSettings.getString(legacyKey(null), null)
     )
 
     private fun hasOverride(chat: String) =
-        settings.contains(key(chat)) || settings.contains(legacyKey(chat))
+        waSettings.contains(key(chat)) || waSettings.contains(legacyKey(chat))
 
     private fun rawJid(jid: Any?): String? = runCatching {
         GoogleTranslateSettings.normalizeChatId(
@@ -266,14 +269,14 @@ internal class GoogleTranslateChatUi(
     private fun keyOutgoing(chat: String?) = "google_translation_outgoing_v1_" + (chat ?: "default")
     
     private fun configOutgoing(chat: String?): GoogleTranslationConfigOutgoing {
-        val local = chat?.let { settings.getString(keyOutgoing(it), null) }
-        val global = settings.getString(keyOutgoing(null), null)
+        val local = chat?.let { waSettings.getString(keyOutgoing(it), null) }
+        val global = waSettings.getString(keyOutgoing(null), null)
         return GoogleTranslateSettingsOutgoing.decode(local) 
             ?: GoogleTranslateSettingsOutgoing.decode(global) 
             ?: GoogleTranslationConfigOutgoing()
     }
     
-    private fun hasOverrideOutgoing(chat: String) = settings.contains(keyOutgoing(chat))
+    private fun hasOverrideOutgoing(chat: String) = waSettings.contains(keyOutgoing(chat))
 
     private fun showSettings(activity: Activity, chat: String?, onSaved: () -> Unit = {}) {
         val ctx = ModuleContextWrapper(activity)
@@ -378,7 +381,7 @@ internal class GoogleTranslateChatUi(
             .setView(ScrollView(ctx).apply { addView(layout) })
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Save") { _, _ ->
-                settings.edit().apply {
+                waSettings.edit().apply {
                     if (chat != null && inherit.isChecked) {
                         YukiLog.log("[WaeOutTranslate] Dialog: Removing per-chat settings for $chat (using global)")
                         remove(key(chat))

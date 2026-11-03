@@ -38,7 +38,10 @@ class GoogleTranslateOutgoing(
 ) : Feature(loader, preferences) {
 
     private val main = Handler(Looper.getMainLooper())
-    private val settings get() = xprefs
+    // Module settings (read-only from WA): just for reading google_translate toggle
+    private val moduleSettings get() = xprefs
+    // WhatsApp writable settings: per-chat outgoing config, cached originals
+    private val waSettings get() = WppCore.getPrivPrefs()
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
     private val renderedViews = WeakHashMap<TextView, String>()
@@ -56,25 +59,25 @@ class GoogleTranslateOutgoing(
     private fun keyIncludeOriginal() = "google_translation_include_original"
     
     private fun configOutgoing(chat: String?): GoogleTranslationConfigOutgoing {
-        val local = chat?.let { settings.getString(keyOutgoing(it), null) }
-        val global = settings.getString(keyOutgoing(null), null)
+        val local = chat?.let { waSettings.getString(keyOutgoing(it), null) }
+        val global = waSettings.getString(keyOutgoing(null), null)
         return GoogleTranslateSettingsOutgoing.decode(local) 
             ?: GoogleTranslateSettingsOutgoing.decode(global) 
             ?: GoogleTranslationConfigOutgoing()
     }
     
     private fun includeOriginal(): Boolean {
-        return settings.getBoolean(keyIncludeOriginal(), true)
+        return waSettings.getBoolean(keyIncludeOriginal(), true)
     }
     
     private fun storeOriginalText(messageId: String, original: String) {
         scope.launch {
             try {
-                val editor = settings.edit()
+                val editor = waSettings.edit()
                 val key = PREF_PREFIX + messageId
                 editor.putString(key, original)
                 
-                val allKeys = settings.all.keys.filter { it.startsWith(PREF_PREFIX) }
+                val allKeys = waSettings.all.keys.filter { it.startsWith(PREF_PREFIX) }
                 if (allKeys.size >= MAX_STORED_ORIGINALS) {
                     allKeys.sorted().take(allKeys.size - MAX_STORED_ORIGINALS + 1).forEach {
                         editor.remove(it)
@@ -90,7 +93,7 @@ class GoogleTranslateOutgoing(
     
     private fun getOriginalText(messageId: String): String? {
         return try {
-            settings.getString(PREF_PREFIX + messageId, null)
+            waSettings.getString(PREF_PREFIX + messageId, null)
         } catch (e: Exception) {
             YukiLog.log("$TAG ERROR: Failed to retrieve original: ${e.message}")
             null
@@ -110,7 +113,7 @@ class GoogleTranslateOutgoing(
     }
 
     override fun doHook() {
-        if (!xprefs.getBoolean("google_translate", false)) return
+        if (!moduleSettings.getBoolean("google_translate", false)) return
         
         hookConversationMenu()
         installOutgoingRendering()
@@ -172,7 +175,7 @@ class GoogleTranslateOutgoing(
     private fun updateMenuItemVisibility(menuItem: MenuItem) {
         try {
             // Check global master toggle
-            if (!xprefs.getBoolean("google_translate", false)) {
+            if (!moduleSettings.getBoolean("google_translate", false)) {
                 YukiLog.log("$TAG Master toggle disabled, hiding menu item")
                 menuItem.isVisible = false
                 return
