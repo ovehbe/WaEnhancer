@@ -37,4 +37,57 @@ internal object GoogleTranslateSettings {
         if (name.isEmpty()) return null
         return jid.takeIf { it.substringAfter('@', "") in setOf("g.us", "s.whatsapp.net", "lid") }
     }
+    
+    /**
+     * Resolve translation config for a message using the same logic as the UI.
+     * Returns normalized chat ID and config (per-chat, then global, then legacy).
+     */
+    fun resolveForMessage(
+        fmessage: com.wmods.wppenhacer.xposed.core.components.FMessageWpp,
+        prefs: android.content.SharedPreferences
+    ): Pair<String?, GoogleTranslationConfig> {
+        val chatId = try {
+            val remoteJid = fmessage.key.remoteJid
+            val conversationJid = com.wmods.wppenhacer.xposed.utils.ReflectionUtils.getObjectField(
+                fmessage.key.thisObject,
+                "conversationRowJid"
+            )
+            val jidToUse = conversationJid ?: remoteJid
+            val rawString = com.wmods.wppenhacer.xposed.utils.ReflectionUtils.callMethod(
+                jidToUse,
+                "getRawString"
+            ) as? String
+            val normalized = normalizeChatId(rawString)
+            
+            if (normalized?.endsWith("@g.us") == true) {
+                normalized
+            } else {
+                val phoneJid = com.wmods.wppenhacer.xposed.core.WppCore.getPhoneJidFromUserJid(jidToUse)
+                val phoneRaw = phoneJid?.let {
+                    com.wmods.wppenhacer.xposed.utils.ReflectionUtils.callMethod(
+                        it,
+                        "getRawString"
+                    ) as? String
+                }
+                normalizeChatId(phoneRaw) ?: normalized
+            }
+        } catch (e: Exception) {
+            null
+        }
+        
+        val config = if (chatId != null) {
+            val key = "google_translation_v3_$chatId"
+            val legacyKey = "google_translation_v2_$chatId"
+            resolve(
+                prefs.getString(key, null),
+                prefs.getString("google_translation_v3_default", null),
+                prefs.getString(legacyKey, null),
+                prefs.getString("google_translation_v2_default", null)
+            )
+        } else {
+            GoogleTranslationConfig()
+        }
+        
+        return Pair(chatId, config)
+    }
 }

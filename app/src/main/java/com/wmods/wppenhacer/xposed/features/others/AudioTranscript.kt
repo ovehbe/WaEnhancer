@@ -93,8 +93,7 @@ class AudioTranscript(
         val responseJson = transcribeAudio(file, provider)
         val transcript = responseJson.getString(JSON_TEXT)
         
-        val chatJid = fmessage.key.remoteJid?.userJid as? String
-        val finalTranscript = translateTranscriptIfEnabled(transcript, chatJid)
+        val finalTranscript = translateTranscriptIfEnabled(transcript, fmessage)
         
         val segments = buildTranscriptionSegments(
             responseJson = responseJson,
@@ -115,33 +114,23 @@ class AudioTranscript(
         param.result = null
     }
 
-    private fun translateTranscriptIfEnabled(transcript: String, chatJid: String?): String {
-        if (transcript.isBlank() || chatJid == null) return transcript
+    private fun translateTranscriptIfEnabled(transcript: String, fmessage: FMessageWpp): String {
+        if (transcript.isBlank()) return transcript
         
         val translator = GoogleTranslate.getInstance() ?: return transcript
         
         try {
             val prefs = com.wmods.wppenhacer.xposed.core.WppCore.getPrivPrefs()
-            val key = "google_translation_v3_$chatJid"
-            val configJson = prefs.getString(key, null) ?: return transcript
+            val (chatId, config) = GoogleTranslateSettings.resolveForMessage(fmessage, prefs)
             
-            val targetLang = try {
-                val obj = org.json.JSONObject(configJson)
-                val enabled = obj.optBoolean("enabled", false)
-                if (!enabled) return transcript
-                obj.optString("targetLanguage", "")
-            } catch (e: Exception) {
-                return transcript
-            }
-            
-            if (targetLang.isBlank()) return transcript
+            if (!config.enabled || config.target.isBlank()) return transcript
             
             val result = translator.translateWithResult(
                 text = transcript,
-                languageSource = "auto",
-                languageDest = targetLang,
+                languageSource = config.source,
+                languageDest = config.target,
                 bypassCache = false,
-                chatJid = chatJid
+                chatJid = chatId
             ).get()
             
             val translated = result.text
