@@ -508,10 +508,13 @@ internal class GoogleTranslateChatUi(
         
         // Check cache (provider determined at translation time)
         val provider = getProvider?.invoke()?.getId() ?: "google"
+        YukiLog.log("[TranslateUI] Cache lookup: msgId=${message.key.messageID.take(8)} provider=$provider")
         translationCache.get(message.key.messageID, selection.target, provider)?.let {
+            YukiLog.log("[TranslateUI] ✓ Cache HIT: ${it.take(30)}...")
             render(textView, it)
             return
         }
+        YukiLog.log("[TranslateUI] ✗ Cache MISS → will translate")
         
         if ((failures[request] ?: 0L) > SystemClock.elapsedRealtime()) return
         val future = request(request)
