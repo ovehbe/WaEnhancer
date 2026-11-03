@@ -227,49 +227,44 @@ class GeneralFragment : BaseFragment() {
             // Show loading toast
             Toast.makeText(context, "Fetching models...", Toast.LENGTH_SHORT).show()
             
-            // Create provider and fetch models off main thread
-            CoroutineScope(Dispatchers.Main).launch {
-                try {
-                    val provider = OpenAITranslationProvider(prefs)
-                    
-                    withContext(Dispatchers.IO) {
-                        provider.fetchModels { result ->
-                            launch(Dispatchers.Main) {
-                                result.fold(
-                                    onSuccess = { models ->
-                                        if (models.isEmpty()) {
-                                            Toast.makeText(
-                                                context,
-                                                "No models found",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        } else {
-                                            updateModelList(models)
-                                            saveFetchedModels(models)
-                                            Toast.makeText(
-                                                context,
-                                                "Found ${models.size} models",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
-                                    },
-                                    onFailure = { error ->
-                                        Toast.makeText(
-                                            context,
-                                            "Error: ${error.message}",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                )
+            // Create provider and fetch models
+            val provider = OpenAITranslationProvider(prefs)
+            
+            provider.fetchModels { result, statusCode, errorDetails ->
+                // Callback runs on OkHttp thread, post to main thread for UI updates
+                activity?.runOnUiThread {
+                    result.fold(
+                        onSuccess = { models ->
+                            if (models.isEmpty()) {
+                                Toast.makeText(
+                                    context,
+                                    "No models found in response",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } else {
+                                updateModelList(models)
+                                saveFetchedModels(models)
+                                Toast.makeText(
+                                    context,
+                                    "Fetched ${models.size} models",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
+                        },
+                        onFailure = { error ->
+                            val message = if (statusCode != null) {
+                                val snippet = errorDetails?.take(100) ?: error.message
+                                "HTTP $statusCode: $snippet"
+                            } else {
+                                "Error: ${error.message}"
+                            }
+                            Toast.makeText(
+                                context,
+                                message,
+                                Toast.LENGTH_LONG
+                            ).show()
                         }
-                    }
-                } catch (e: Exception) {
-                    Toast.makeText(
-                        context,
-                        "Error: ${e.message}",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    )
                 }
             }
         }

@@ -202,17 +202,25 @@ class OpenAITranslationProvider(
     
     /**
      * Fetch available models from the API
+     * Handles both OpenAI format {data:[{id}]} and plain arrays
      */
-    fun fetchModels(callback: (Result<List<String>>) -> Unit) {
+    fun fetchModels(callback: (Result<List<String>>, Int?, String?) -> Unit) {
         val apiKey = getApiKey()
         if (apiKey.isNullOrBlank()) {
-            callback(Result.failure(IOException("API key not configured")))
+            YukiLog.log("$TAG fetchModels: API key not configured")
+            callback(Result.failure(IOException("API key not configured")), null, null)
             return
         }
         
         try {
-            val baseUrl = getBaseUrl()
+            // Normalize base URL: remove trailing slash, ensure it ends with /v1
+            var baseUrl = getBaseUrl().trim().trimEnd('/')
+            if (!baseUrl.endsWith("/v1")) {
+                baseUrl = "$baseUrl/v1"
+            }
             val url = "$baseUrl/models"
+            
+            YukiLog.log("$TAG Fetching models from: $url")
             
             val request = Request.Builder()
                 .url(url)
@@ -222,41 +230,111 @@ class OpenAITranslationProvider(
             
             client.newCall(request).enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    callback(Result.failure(e))
+                    YukiLog.log("$TAG fetchModels network failure: ${e.message}")
+                    callback(Result.failure(e), null, e.message)
                 }
 
                 override fun onResponse(call: Call, response: Response) {
                     response.use {
                         try {
+                            val statusCode = it.code
+                            val responseBody = it.body?.string() ?: ""
+                            
+                            YukiLog.log("$TAG fetchModels HTTP $statusCode, body length: ${responseBody.length}")
+                            
                             if (!it.isSuccessful) {
-                                callback(Result.failure(IOException("HTTP ${it.code}")))
+                                val errorSnippet = responseBody.take(200)
+                                YukiLog.log("$TAG fetchModels error: $errorSnippet")
+                                callback(
+                                    Result.failure(IOException("HTTP $statusCode")),
+                                    statusCode,
+                                    errorSnippet
+                                )
                                 return
                             }
                             
-                            val responseBody = it.body?.string() 
-                                ?: throw IOException("Empty response")
-                            val json = JSONObject(responseBody)
-                            val data = json.optJSONArray("data") 
-                                ?: throw IOException("No data in response")
-                            
-                            val models = mutableListOf<String>()
-                            for (i in 0 until data.length()) {
-                                val model = data.getJSONObject(i)
-                                val id = model.optString("id")
-                                if (id.isNotBlank()) {
-                                    models.add(id)
-                                }
+                            if (responseBody.isBlank()) {
+                                callback(
+                                    Result.failure(IOException("Empty response")),
+                                    statusCode,
+                                    "Empty response body"
+                                )
+                                return
                             }
                             
-                            callback(Result.success(models.sorted()))
+                            val models = parseModelsResponse(responseBody)
+                            
+                            if (models.isEmpty()) {
+                                YukiLog.log("$TAG fetchModels: No models found in response")
+                                callback(
+                                    Result.failure(IOException("No models found")),
+                                    statusCode,
+                                    "Response contained no models"
+                                )
+                            } else {
+                                YukiLog.log("$TAG fetchModels: Found ${models.size} models")
+                                callback(Result.success(models.sorted()), statusCode, null)
+                            }
                         } catch (e: Exception) {
-                            callback(Result.failure(e))
+                            YukiLog.log("$TAG fetchModels parse error: ${e.message}")
+                            callback(Result.failure(e), it.code, e.message)
                         }
                     }
                 }
             })
         } catch (e: Exception) {
-            callback(Result.failure(e))
+            YukiLog.log("$TAG fetchModels request error: ${e.message}")
+            callback(Result.failure(e), null, e.message)
         }
+    }
+    
+    private fun parseModelsResponse(responseBody: String): List<String> {
+        val json = JSONObject(responseBody)
+        val models = mutableListOf<String>()
+        
+        // Try OpenAI format: {data: [{id: "model-name"}]}
+        val data = json.optJSONArray("data")
+        if (data != null) {
+            for (i in 0 until data.length()) {
+                val modelObj = data.optJSONObject(i)
+                val id = modelObj?.optString("id")
+                if (!id.isNullOrBlank()) {
+                    models.add(id)
+                }
+            }
+            return models
+        }
+        
+        // Try plain array: {models: ["model-name"]}
+        val modelsArray = json.optJSONArray("models")
+        if (modelsArray != null) {
+            for (i in 0 until modelsArray.length()) {
+                val id = modelsArray.optString(i)
+                if (id.isNotBlank()) {
+                    models.add(id)
+                }
+            }
+            return models
+        }
+        
+        // Try top-level array
+        try {
+            val rootArray = JSONArray(responseBody)
+            for (i in 0 until rootArray.length()) {
+                val item = rootArray.opt(i)
+                if (item is String && item.isNotBlank()) {
+                    models.add(item)
+                } else if (item is JSONObject) {
+                    val id = item.optString("id")
+                    if (id.isNotBlank()) {
+                        models.add(id)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Not a root array, that's fine
+        }
+        
+        return models
     }
 }
