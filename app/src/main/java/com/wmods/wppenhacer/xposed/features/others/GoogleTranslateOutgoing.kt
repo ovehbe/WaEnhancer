@@ -6,12 +6,12 @@ import android.os.Handler
 import android.os.Looper
 import android.text.SpannableStringBuilder
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewStub
 import android.view.ViewTreeObserver
 import android.widget.EditText
-import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import com.wmods.wppenhacer.xposed.core.Feature
@@ -25,6 +25,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.lang.reflect.Field
+import java.lang.reflect.Method
 import java.util.WeakHashMap
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
@@ -43,6 +45,12 @@ class GoogleTranslateOutgoing(
     private val renderedViews = WeakHashMap<TextView, String>()
     private val isTranslating = AtomicBoolean(false)
     private val bypassNextSend = AtomicBoolean(false)
+    
+    private val hookedSendViews = WeakHashMap<View, Boolean>()
+    private val hookedEditTexts = WeakHashMap<EditText, Boolean>()
+    
+    private var performClickMethod: Method? = null
+    private var onKeyDownMethod: Method? = null
     
     private companion object {
         const val TAG = "[WaeOutTranslate]"
@@ -106,12 +114,20 @@ class GoogleTranslateOutgoing(
     override fun doHook() {
         if (!xprefs.getBoolean("google_translate", false)) return
         
-        hookConversationSendButton()
+        try {
+            performClickMethod = View::class.java.getDeclaredMethod("performClick")
+            onKeyDownMethod = View::class.java.getDeclaredMethod("onKeyDown", Int::class.javaPrimitiveType, KeyEvent::class.java)
+            YukiLog.log("$TAG Cached reflection methods")
+        } catch (e: Exception) {
+            YukiLog.log("$TAG WARN: Failed to cache methods: ${e.message}")
+        }
+        
+        hookConversationViews()
         installOutgoingRendering()
     }
 
-    private fun hookConversationSendButton() {
-        YukiLog.log("$TAG Installing conversation send button interceptor")
+    private fun hookConversationViews() {
+        YukiLog.log("$TAG Installing conversation view hooks")
         
         WppCore.addListenerActivity { activity, state ->
             if (activity.javaClass.simpleName == "Conversation" && 
@@ -160,6 +176,9 @@ class GoogleTranslateOutgoing(
                 
                 YukiLog.log("$TAG Found entry EditText")
                 
+                // Hook EditText events
+                hookEditTextEvents(entryEditText, config, chat)
+                
                 // Handle send button - may be ViewStub initially
                 val sendViewId = Utils.getID("send", "id")
                 val sendView = activity.findViewById<View>(sendViewId)
@@ -168,17 +187,14 @@ class GoogleTranslateOutgoing(
                     YukiLog.log("$TAG Send is ViewStub, waiting for inflation")
                     sendView.setOnInflateListener { _, inflated ->
                         YukiLog.log("$TAG Send ViewStub inflated")
-                        installInterceptorOnSend(inflated, entryEditText, config, chat)
+                        hookSendViewEvents(inflated, entryEditText, config, chat)
                     }
                 } else if (sendView != null) {
                     YukiLog.log("$TAG Send view already inflated")
-                    installInterceptorOnSend(sendView, entryEditText, config, chat)
+                    hookSendViewEvents(sendView, entryEditText, config, chat)
                 } else {
                     YukiLog.log("$TAG ERROR: Send view not found")
                 }
-                
-                // Hook Enter key for IME send
-                installEnterKeyHandler(entryEditText, config, chat)
                 
             } catch (e: Exception) {
                 YukiLog.log("$TAG ERROR: Failed in onConversationStarted: ${e.message}")
@@ -187,170 +203,254 @@ class GoogleTranslateOutgoing(
         }
     }
 
-    private fun installInterceptorOnSend(
+    private fun hookSendViewEvents(
+        sendView: View,
+        entryEditText: EditText,
+        config: GoogleTranslationConfigOutgoing,
+        chat: String
+    ) {
+        if (hookedSendViews.containsKey(sendView)) {
+            YukiLog.log("$TAG Send view already hooked")
+            return
+        }
+        
+        YukiLog.log("$TAG Hooking send view events (class=${sendView.javaClass.simpleName}, id=${sendView.id})")
+        
+        try {
+            // Install touch listener to intercept all touches
+            sendView.setOnTouchListener { v, event ->
+                YukiLog.log("$TAG >>> OnTouchListener action=${event.action} (${motionActionToString(event.action)})")
+                
+                if (event.action == MotionEvent.ACTION_UP) {
+                    YukiLog.log("$TAG Touch ACTION_UP detected, checking intercept")
+                    if (handleSendIntercept(v, entryEditText, config, chat)) {
+                        YukiLog.log("$TAG Intercepted, consuming event")
+                        true
+                    } else {
+                        YukiLog.log("$TAG Not intercepted, allowing event")
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            
+            // Also wrap any existing click listener
+            wrapExistingClickListener(sendView, entryEditText, config, chat)
+            
+            // Monitor for listener changes
+            val observer = sendView.viewTreeObserver
+            observer.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+                override fun onGlobalLayout() {
+                    wrapExistingClickListener(sendView, entryEditText, config, chat)
+                }
+            })
+            
+            hookedSendViews[sendView] = true
+            YukiLog.log("$TAG Send view event hooks installed")
+            
+        } catch (e: Exception) {
+            YukiLog.log("$TAG ERROR: Failed to hook send view: ${e.message}")
+            e.printStackTrace()
+        }
+    }
+
+    private fun wrapExistingClickListener(
         sendView: View,
         entryEditText: EditText,
         config: GoogleTranslationConfigOutgoing,
         chat: String
     ) {
         try {
-            YukiLog.log("$TAG Installing interceptor on send view")
-            
-            // Get original click listener
-            val originalOnClickListener = try {
-                val listenerInfoMethod = View::class.java.getDeclaredMethod("getListenerInfo")
-                listenerInfoMethod.isAccessible = true
-                val listenerInfo = listenerInfoMethod.invoke(sendView)
-                val mOnClickListenerField = listenerInfo.javaClass.getDeclaredField("mOnClickListener")
-                mOnClickListenerField.isAccessible = true
-                mOnClickListenerField.get(listenerInfo) as? View.OnClickListener
-            } catch (e: Exception) {
-                YukiLog.log("$TAG WARN: Could not get original listener: ${e.message}")
-                null
+            val originalListener = getClickListener(sendView)
+            if (originalListener != null) {
+                YukiLog.log("$TAG Found existing click listener: ${originalListener.javaClass.simpleName}")
+                
+                sendView.setOnClickListener { v ->
+                    YukiLog.log("$TAG >>> OnClickListener called")
+                    
+                    if (handleSendIntercept(v, entryEditText, config, chat)) {
+                        YukiLog.log("$TAG Intercepted, NOT calling original listener")
+                    } else {
+                        YukiLog.log("$TAG Not intercepted, calling original listener")
+                        originalListener.onClick(v)
+                    }
+                }
             }
-            
-            // Install intercepting listener
-            sendView.setOnClickListener { view ->
-                handleSendClick(view, entryEditText, config, chat, originalOnClickListener)
-            }
-            
-            YukiLog.log("$TAG Interceptor installed successfully")
-            
         } catch (e: Exception) {
-            YukiLog.log("$TAG ERROR: Failed to install interceptor: ${e.message}")
-            e.printStackTrace()
+            YukiLog.log("$TAG WARN: Failed to wrap click listener: ${e.message}")
         }
     }
 
-    private fun installEnterKeyHandler(
+    private fun getClickListener(view: View): View.OnClickListener? {
+        return try {
+            val listenerInfoMethod = View::class.java.getDeclaredMethod("getListenerInfo")
+            listenerInfoMethod.isAccessible = true
+            val listenerInfo = listenerInfoMethod.invoke(view)
+            
+            val mOnClickListenerField = listenerInfo.javaClass.getDeclaredField("mOnClickListener")
+            mOnClickListenerField.isAccessible = true
+            mOnClickListenerField.get(listenerInfo) as? View.OnClickListener
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun hookEditTextEvents(
         entryEditText: EditText,
         config: GoogleTranslationConfigOutgoing,
         chat: String
     ) {
+        if (hookedEditTexts.containsKey(entryEditText)) {
+            YukiLog.log("$TAG EditText already hooked")
+            return
+        }
+        
+        YukiLog.log("$TAG Hooking EditText events")
+        
         try {
-            // Hook Enter key - only if WhatsApp's "Enter is send" is enabled
-            entryEditText.setOnEditorActionListener { v, actionId, event ->
-                // Check if this is a send action
-                val isSendAction = (event?.keyCode == KeyEvent.KEYCODE_ENTER && 
-                                   event.action == KeyEvent.ACTION_DOWN) ||
-                                   actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND
+            // Override onKeyDown
+            entryEditText.setOnKeyListener { v, keyCode, event ->
+                YukiLog.log("$TAG >>> OnKeyListener keyCode=$keyCode action=${event.action}")
                 
-                if (isSendAction) {
-                    YukiLog.log("$TAG Enter/IME send detected")
-                    // Find send button and trigger our handler
+                if (keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN) {
+                    YukiLog.log("$TAG ENTER key DOWN detected")
+                    
                     val activity = WppCore.getCurrentActivity()
                     val sendView = activity?.findViewById<View>(Utils.getID("send", "id"))
                     if (sendView != null && sendView !is ViewStub) {
-                        handleSendClick(sendView, v as EditText, config, chat, null)
-                        true  // Consume event
-                    } else {
-                        false  // Let it through
+                        if (handleSendIntercept(sendView, v as EditText, config, chat)) {
+                            YukiLog.log("$TAG Intercepted ENTER, consuming event")
+                            return@setOnKeyListener true
+                        }
                     }
-                } else {
-                    false
                 }
+                
+                false
             }
-            YukiLog.log("$TAG Enter key handler installed")
+            
+            // Also hook editor action
+            entryEditText.setOnEditorActionListener { v, actionId, event ->
+                YukiLog.log("$TAG >>> OnEditorActionListener actionId=$actionId")
+                
+                val isSendAction = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND ||
+                                   (event?.keyCode == KeyEvent.KEYCODE_ENTER && 
+                                    event.action == KeyEvent.ACTION_DOWN)
+                
+                if (isSendAction) {
+                    YukiLog.log("$TAG IME send action detected")
+                    
+                    val activity = WppCore.getCurrentActivity()
+                    val sendView = activity?.findViewById<View>(Utils.getID("send", "id"))
+                    if (sendView != null && sendView !is ViewStub) {
+                        if (handleSendIntercept(sendView, v as EditText, config, chat)) {
+                            YukiLog.log("$TAG Intercepted IME send, consuming event")
+                            return@setOnEditorActionListener true
+                        }
+                    }
+                }
+                
+                false
+            }
+            
+            hookedEditTexts[entryEditText] = true
+            YukiLog.log("$TAG EditText event hooks installed")
+            
         } catch (e: Exception) {
-            YukiLog.log("$TAG WARN: Failed to install Enter handler: ${e.message}")
+            YukiLog.log("$TAG ERROR: Failed to hook EditText: ${e.message}")
+            e.printStackTrace()
         }
     }
 
-    private fun handleSendClick(
-        sendButton: View,
+    private fun motionActionToString(action: Int): String = when (action) {
+        MotionEvent.ACTION_DOWN -> "DOWN"
+        MotionEvent.ACTION_UP -> "UP"
+        MotionEvent.ACTION_MOVE -> "MOVE"
+        MotionEvent.ACTION_CANCEL -> "CANCEL"
+        else -> action.toString()
+    }
+
+    private fun handleSendIntercept(
+        sendView: View,
         entryEditText: EditText,
         config: GoogleTranslationConfigOutgoing,
-        chat: String,
-        originalListener: View.OnClickListener?
-    ) {
+        chat: String
+    ): Boolean {
         try {
             // Check bypass flag
             if (bypassNextSend.compareAndSet(true, false)) {
-                YukiLog.log("$TAG Bypass flag set, calling original listener")
-                originalListener?.onClick(sendButton) ?: sendButton.callOnClick()
-                return
+                YukiLog.log("$TAG Bypass flag set, allowing send")
+                return false
             }
             
             // Check if already translating
             if (!isTranslating.compareAndSet(false, true)) {
-                YukiLog.log("$TAG Already translating, ignoring click")
-                return
+                YukiLog.log("$TAG Already translating, blocking send")
+                return true
             }
             
             val originalText = entryEditText.text?.toString()
             if (originalText.isNullOrBlank()) {
-                YukiLog.log("$TAG Empty text, calling original listener")
+                YukiLog.log("$TAG Empty text, allowing send")
                 isTranslating.set(false)
-                originalListener?.onClick(sendButton) ?: sendButton.callOnClick()
-                return
+                return false
             }
             
             if (originalText.length > 4000) {
-                YukiLog.log("$TAG Text too long (${originalText.length} chars), calling original listener")
+                YukiLog.log("$TAG Text too long (${originalText.length} chars), allowing send")
                 isTranslating.set(false)
-                originalListener?.onClick(sendButton) ?: sendButton.callOnClick()
-                return
+                return false
             }
             
-            YukiLog.log("$TAG Send clicked, intercepting. Text: \"${originalText.take(50)}...\"")
+            YukiLog.log("$TAG Send intercepted! Text: \"${originalText.take(50)}...\"")
             
-            // Show progress (dim button)
-            sendButton.alpha = 0.5f
-            sendButton.isEnabled = false
+            // Show progress
+            sendView.alpha = 0.5f
+            sendView.isEnabled = false
             
             // Translate on background thread
             scope.launch {
                 try {
+                    val startTime = System.currentTimeMillis()
                     val translated = translate(originalText, "auto", config.target)
                         .get(TRANSLATION_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    val duration = System.currentTimeMillis() - startTime
                     
                     main.post {
                         try {
                             if (translated.isNullOrBlank()) {
-                                YukiLog.log("$TAG Translation returned empty")
+                                YukiLog.log("$TAG Translation returned empty after ${duration}ms")
                                 Utils.showToast("Translation failed", Toast.LENGTH_SHORT)
                                 return@post
                             }
                             
-                            YukiLog.log("$TAG Translation success: \"${translated.take(50)}...\"")
+                            YukiLog.log("$TAG Translation success in ${duration}ms: \"${translated.take(50)}...\"")
                             
-                            // Set translated text in EditText
+                            // Set translated text
                             entryEditText.setText(translated)
                             entryEditText.setSelection(translated.length)
                             
-                            // Important: Post the send to ensure setText is committed
+                            // Post the real send with delay
                             main.postDelayed({
                                 try {
-                                    YukiLog.log("$TAG Triggering real send")
-                                    
-                                    // Set bypass flag
+                                    YukiLog.log("$TAG Triggering real send via performClick")
                                     bypassNextSend.set(true)
-                                    
-                                    // Trigger send - use performClick to simulate real tap
-                                    val sent = if (originalListener != null) {
-                                        originalListener.onClick(sendButton)
-                                        true
-                                    } else {
-                                        sendButton.performClick()
-                                    }
-                                    
-                                    if (!sent) {
-                                        YukiLog.log("$TAG WARN: performClick returned false")
-                                    }
-                                    
+                                    val sent = sendView.performClick()
+                                    YukiLog.log("$TAG performClick returned: $sent")
                                 } catch (e: Exception) {
                                     YukiLog.log("$TAG ERROR in send trigger: ${e.message}")
                                     bypassNextSend.set(false)
                                 } finally {
                                     isTranslating.set(false)
                                 }
-                            }, 100)  // Short delay to ensure EditText commits
+                            }, 150)
                             
                         } catch (e: Exception) {
                             YukiLog.log("$TAG ERROR in success handler: ${e.message}")
+                            isTranslating.set(false)
                         } finally {
-                            sendButton.alpha = 1.0f
-                            sendButton.isEnabled = true
+                            sendView.alpha = 1.0f
+                            sendView.isEnabled = true
                         }
                     }
                     
@@ -359,8 +459,8 @@ class GoogleTranslateOutgoing(
                     
                     main.post {
                         try {
-                            sendButton.alpha = 1.0f
-                            sendButton.isEnabled = true
+                            sendView.alpha = 1.0f
+                            sendView.isEnabled = true
                             Utils.showToast("Translation failed", Toast.LENGTH_SHORT)
                         } catch (ex: Exception) {
                             YukiLog.log("$TAG ERROR in failure handler: ${ex.message}")
@@ -371,12 +471,15 @@ class GoogleTranslateOutgoing(
                 }
             }
             
+            return true
+            
         } catch (e: Exception) {
-            YukiLog.log("$TAG ERROR in handleSendClick: ${e.message}")
+            YukiLog.log("$TAG ERROR in handleSendIntercept: ${e.message}")
             e.printStackTrace()
-            sendButton.alpha = 1.0f
-            sendButton.isEnabled = true
+            sendView.alpha = 1.0f
+            sendView.isEnabled = true
             isTranslating.set(false)
+            return false
         }
     }
 
