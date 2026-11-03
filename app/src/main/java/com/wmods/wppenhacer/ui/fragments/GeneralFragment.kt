@@ -8,7 +8,6 @@ import android.widget.Toast
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.Preference
-import androidx.preference.SwitchPreference
 import com.wmods.wppenhacer.R
 import com.wmods.wppenhacer.preference.EditableListPreference
 import com.wmods.wppenhacer.preference.PasswordEditTextPreference
@@ -19,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import rikka.material.preference.MaterialSwitchPreference
 
 class GeneralFragment : BaseFragment() {
     override fun onCreateView(
@@ -75,12 +75,12 @@ class GeneralFragment : BaseFragment() {
 
     class ConversationGeneralPreference : BasePreferenceFragment() {
         
-        private lateinit var providerPref: ListPreference
-        private lateinit var baseUrlPref: EditTextPreference
-        private lateinit var apiKeyPref: PasswordEditTextPreference
-        private lateinit var modelPref: EditableListPreference
-        private lateinit var fallbackPref: SwitchPreference
-        private lateinit var fetchModelsPref: Preference
+        private var providerPref: ListPreference? = null
+        private var baseUrlPref: EditTextPreference? = null
+        private var apiKeyPref: PasswordEditTextPreference? = null
+        private var modelPref: EditableListPreference? = null
+        private var fallbackPref: MaterialSwitchPreference? = null
+        private var fetchModelsPref: Preference? = null
         
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             super.onCreatePreferences(savedInstanceState, rootKey)
@@ -91,44 +91,49 @@ class GeneralFragment : BaseFragment() {
         }
         
         private fun setupTranslationPreferences() {
-            providerPref = findPreference("translation_provider") ?: return
-            baseUrlPref = findPreference("translation_ai_base_url") ?: return
-            apiKeyPref = findPreference("translation_ai_api_key") ?: return
-            modelPref = findPreference("translation_ai_model") ?: return
-            fallbackPref = findPreference("translation_ai_fallback_to_google") ?: return
-            fetchModelsPref = findPreference("translation_fetch_models") ?: return
+            providerPref = findPreference("translation_provider")
+            baseUrlPref = findPreference("translation_ai_base_url")
+            apiKeyPref = findPreference("translation_ai_api_key")
+            modelPref = findPreference("translation_ai_model")
+            fallbackPref = findPreference("translation_ai_fallback_to_google")
+            fetchModelsPref = findPreference("translation_fetch_models")
+            
+            if (providerPref == null || baseUrlPref == null || apiKeyPref == null || 
+                modelPref == null || fallbackPref == null || fetchModelsPref == null) {
+                return
+            }
             
             // Update visibility based on provider
             updateAiFieldsVisibility()
             
             // Listen to provider changes
-            providerPref.setOnPreferenceChangeListener { _, newValue ->
+            providerPref?.setOnPreferenceChangeListener { _, newValue ->
                 // Update visibility after change
-                providerPref.value = newValue.toString()
+                providerPref?.value = newValue.toString()
                 updateAiFieldsVisibility()
                 true
             }
             
             // Handle "Fetch Models" button
-            fetchModelsPref.setOnPreferenceClickListener {
+            fetchModelsPref?.setOnPreferenceClickListener {
                 fetchModelsFromApi()
                 true
             }
             
             // Set model summary provider
-            modelPref.summaryProvider = Preference.SummaryProvider<EditableListPreference> { pref ->
+            modelPref?.summaryProvider = Preference.SummaryProvider<EditableListPreference> { pref ->
                 pref.value ?: "gpt-4o-mini"
             }
         }
         
         private fun updateAiFieldsVisibility() {
-            val isAiSelected = providerPref.value == "openai"
+            val isAiSelected = providerPref?.value == "openai"
             
-            baseUrlPref.isVisible = isAiSelected
-            apiKeyPref.isVisible = isAiSelected
-            modelPref.isVisible = isAiSelected
-            fallbackPref.isVisible = isAiSelected
-            fetchModelsPref.isVisible = isAiSelected
+            baseUrlPref?.isVisible = isAiSelected
+            apiKeyPref?.isVisible = isAiSelected
+            modelPref?.isVisible = isAiSelected
+            fallbackPref?.isVisible = isAiSelected
+            fetchModelsPref?.isVisible = isAiSelected
         }
         
         private fun fetchModelsFromApi() {
@@ -155,7 +160,7 @@ class GeneralFragment : BaseFragment() {
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         } else {
-                                            modelPref.setEntriesAndValues(models)
+                                            modelPref?.setEntriesAndValues(models)
                                             Toast.makeText(
                                                 context,
                                                 "Found ${models.size} models",
